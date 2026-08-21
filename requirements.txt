@@ -1,0 +1,9 @@
+# Intentionally empty.
+#
+# FrivOSC's service imports the standard library only. The PC running
+# VRChat is usually not the PC with a Python toolchain set up, and every
+# dependency is another way for an install to fail on a machine nobody can
+# debug remotely.
+#
+# Setup still creates a private environment so FrivOSC never picks up a
+# stray package from a system Python, and so an update can rebuild it.

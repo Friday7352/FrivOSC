@@ -1,0 +1,29 @@
+# Python environments and build artifacts
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+build/*.exe
+build/*.pdb
+dist/
+
+# Native hosts are build outputs, not sources; build/ produces them.
+FrivOSCHost.exe
+FrivOSCSetupHost.exe
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+
+# Local configuration and secrets
+.env
+.env.*
+config.json
+settings.json
+
+# Windows and editor files
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
