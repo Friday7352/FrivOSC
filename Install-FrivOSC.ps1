@@ -1,4 +1,4 @@
-<#
+﻿<#
   FrivOSC — one-click Windows installer
 
   Deliberately much smaller than Evora's. FrivOSC only forwards UDP
@@ -388,11 +388,26 @@ function Install-FrivOSC {
 
     if ($CreateDesktopShortcut) {
         $desktop = [Environment]::GetFolderPath('CommonDesktopDirectory')
+        if ([string]::IsNullOrWhiteSpace($desktop)) { $desktop = [Environment]::GetFolderPath('Desktop') }
         $hostExe = Join-Path $Target 'FrivOSCHost.exe'
         $launcher = Join-Path $Target 'FrivOSC-Launcher.ps1'
-        if (Test-Path -LiteralPath $hostExe -PathType Leaf) {
+        $icon = Join-Path $Target 'FrivOSCIcon.ico'
+        if ([string]::IsNullOrWhiteSpace($desktop)) {
+            & $Log 'No desktop folder was found, so no shortcut was created.'
+        } elseif (Test-Path -LiteralPath $hostExe -PathType Leaf) {
             New-Shortcut -Target $hostExe -Link (Join-Path $desktop 'FrivOSC.lnk') -WorkingDirectory $Target `
-                -IconPath (Join-Path $Target 'FrivOSCIcon.ico') -Arguments ('--script "{0}"' -f $launcher)
+                -IconPath $icon -Arguments ('--script "{0}"' -f $launcher)
+        } else {
+            # FrivOSCHost.exe is a build output. Installing straight from the
+            # repository there is none, and skipping the shortcut entirely
+            # left no way to open FrivOSC at all. Point at PowerShell instead.
+            $powershell = Join-Path ([Environment]::GetFolderPath('System')) 'WindowsPowerShell\v1.0\powershell.exe'
+            if (Test-Path -LiteralPath $powershell -PathType Leaf) {
+                New-Shortcut -Target $powershell -Link (Join-Path $desktop 'FrivOSC.lnk') -WorkingDirectory $Target `
+                    -IconPath $icon -Arguments ('-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File "{0}"' -f $launcher)
+            } else {
+                & $Log 'Windows PowerShell was not found, so no shortcut was created.'
+            }
         }
     }
 

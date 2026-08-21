@@ -1,4 +1,4 @@
-<#
+﻿<#
   FrivOSC — status window
 
   FrivOSC is meant to be invisible, so this window exists for exactly one

@@ -1,7 +1,15 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param([string]$InstallPath=(Join-Path $env:ProgramFiles 'FrivOSC'))
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSCommandPath
+$SetupLog=Join-Path ([IO.Path]::GetTempPath()) 'FrivOSC-Setup.log'
+
+# Everything below runs inside this try. Setup is started with the window
+# hidden, so without it any failure before the wizard appears is completely
+# invisible — nothing opens, nothing is written, and there is nothing to
+# report. Frivo learned this the hard way in 1.0.1.
+try {
+
 $isAdmin=([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if(-not $isAdmin){
   $setupHost=Join-Path $root 'FrivOSCSetupHost.exe'
@@ -40,7 +48,7 @@ $remove=New-FrivoRadio -Theme $Theme -Parent $oldCard -Text 'Uninstall FrivOSC' 
 # --- welcome ------------------------------------------------------------
 $welcome=Page
 [void](New-FrivoLabel -Theme $Theme -Parent $welcome -Text 'This wizard will install FrivOSC on this computer.' -X 28 -Y 12 -W 564 -H 22 -Font $Theme.FontMid -Color $Theme.Ink)
-[void](New-FrivoLabel -Theme $Theme -Parent $welcome -Text "FrivOSC connects VRChat to Frivo. Install it on the computer you play VRChat on.`r`n`r`nIt lets Frivo see when you mute yourself in VRChat, and lets Frivo write to your VRChat chatbox — without you setting any ports or launch options.`r`n`r`nIt installs its own small Python environment and needs no other downloads. Click Next to continue." -X 28 -Y 44 -W 564 -H 200 -Font $Theme.FontUI -Color $Theme.Dim)
+[void](New-FrivoLabel -Theme $Theme -Parent $welcome -Text "FrivOSC lets Frivo connect to VRChat through OSC. Install it on the computer you play VRChat on.`r`n`r`nIt installs its own small Python environment and needs no other downloads. Click Next to continue." -X 28 -Y 44 -W 564 -H 200 -Font $Theme.FontUI -Color $Theme.Dim)
 
 # --- destination --------------------------------------------------------
 $location=Page
@@ -117,6 +125,23 @@ $startWithWindows=New-FrivoCheck -Theme $Theme -Parent $startupCard -Text 'Start
 [void](New-FrivoLabel -Theme $Theme -Parent $options -Text 'IN VRCHAT' -X 30 -Y 208 -W 400 -H 14 -Font $Theme.FontCaps -Color $Theme.Faint)
 $vrcCard=New-FrivoCard -Theme $Theme -Parent $options -X 24 -Y 228 -W 572 -H 72
 [void](New-FrivoLabel -Theme $Theme -Parent $vrcCard -Text "Turn on OSC in VRChat's Options menu. FrivOSC has nothing to listen to until you do." -X 18 -Y 22 -W 536 -H 40 -Font $Theme.FontSmall -Color $Theme.Dim)
+
+function Start-FrivOSCLauncher([string]$Target){
+  # FrivOSCHost.exe is a build output (build\Build-FrivOSCInstaller.ps1
+  # compiles it). A repo install has no host, so fall back to PowerShell
+  # rather than silently doing nothing, which is how this first went wrong.
+  $launcher=Join-Path $Target 'FrivOSC-Launcher.ps1'
+  if(-not (Test-Path -LiteralPath $launcher)){return}
+  $launcherHost=Join-Path $Target 'FrivOSCHost.exe'
+  try{
+    if(Test-Path -LiteralPath $launcherHost){
+      Start-Process -FilePath $launcherHost -WorkingDirectory $Target -ArgumentList @('--script',('"{0}"' -f $launcher))
+    }else{
+      Start-Process -FilePath 'powershell.exe' -WorkingDirectory $Target -WindowStyle Hidden -ArgumentList @(
+        '-NoProfile','-ExecutionPolicy','Bypass','-STA','-WindowStyle','Hidden','-File',('"{0}"' -f $launcher))
+    }
+  }catch{}
+}
 
 # --- installing / done --------------------------------------------------
 $installPage=Page
@@ -216,11 +241,7 @@ $next.Add_Click({
   }
 
   if($cur.p -eq $done){
-    $launcherHost=Join-Path $pathBox.Text 'FrivOSCHost.exe'
-    $launcher=Join-Path $pathBox.Text 'FrivOSC-Launcher.ps1'
-    if($launchAfterInstall.Checked -and (Test-Path -LiteralPath $launcherHost) -and (Test-Path -LiteralPath $launcher)){
-      Start-Process -FilePath $launcherHost -WorkingDirectory $pathBox.Text -ArgumentList @('--script',('"{0}"' -f $launcher))
-    }
+    if($launchAfterInstall.Checked){ Start-FrivOSCLauncher $pathBox.Text }
     $form.Close();return
   }
 
@@ -228,3 +249,21 @@ $next.Add_Click({
 })
 Show 0
 [void]$form.ShowDialog()
+
+} catch {
+    $reason = $_.Exception.Message
+    $where  = $_.ScriptStackTrace
+    try {
+        Add-Content -LiteralPath $SetupLog -Value (
+            "{0}`r`n{1}`r`n{2}`r`n----" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $reason, $where)
+    } catch { }
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        [System.Windows.Forms.MessageBox]::Show(
+            ("FrivOSC Setup could not start.`r`n`r`n{0}`r`n`r`nDetails were saved to:`r`n{1}" -f $reason, $SetupLog),
+            'FrivOSC Setup',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+    } catch { }
+    exit 1
+}

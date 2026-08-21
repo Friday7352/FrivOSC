@@ -1,4 +1,4 @@
-<#
+﻿<#
   Installer logic tests — no WinForms, no registry, no real install.
 
   The functions extracted here are the ones that can do damage or lose

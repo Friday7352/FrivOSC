@@ -1,4 +1,4 @@
-<#
+﻿<#
   FrivOSC — uninstaller
 
   Confirm, then a live step log, then a summary. The same shape as Evora's,

@@ -1,4 +1,4 @@
-# FrivOSC — shared window styling
+﻿# FrivOSC — shared window styling
 # ------------------------------------------------------------------
 # The dark surfaces and red accent used by Frivo's WinForms windows.
 # Shared by FrivOSC's installer and launcher so every FrivOSC
