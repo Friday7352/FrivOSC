@@ -27,6 +27,7 @@ import json
 import os
 import queue
 import re
+import signal
 import socket
 import ssl
 import struct
@@ -67,6 +68,12 @@ def data_directory():
 DATA_DIR = data_directory()
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 LOG_PATH = os.path.join(DATA_DIR, "frivosc.log")
+# The launcher window reads this instead of making its own request to
+# Frivo. Two different HTTP clients asking the same question gave two
+# different answers — the service connected while PowerShell's
+# Invoke-WebRequest refused the self-signed certificate — and the one
+# that matters is the one actually doing the work.
+STATUS_PATH = os.path.join(DATA_DIR, "status.json")
 
 DEFAULT_CONFIG = {
     # Where Frivo is. Written by setup; "" means nothing is configured yet
@@ -107,6 +114,43 @@ def save_config(config):
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(CONFIG_PATH, "w", encoding="utf-8") as handle:
         json.dump(config, handle, indent=2)
+
+
+_status_lock = threading.Lock()
+
+
+def write_status(**fields):
+    """Publish what the service currently knows, for the launcher to read.
+
+    Written whole each time, through a temporary file, so the launcher can
+    never catch a half-written document. Failures are ignored: a status file
+    nobody can write is a cosmetic problem, and the bridge keeps running.
+    """
+    payload = {
+        "version": VERSION,
+        "pid": os.getpid(),
+        # Wall clock rather than monotonic, because the reader is a different
+        # process. Staleness is how the launcher tells "connected" from
+        # "was connected before this process died".
+        "updated_at": time.time(),
+    }
+    payload.update(fields)
+    try:
+        with _status_lock:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            temporary = STATUS_PATH + ".tmp"
+            with open(temporary, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2)
+            os.replace(temporary, STATUS_PATH)
+    except Exception:
+        pass
+
+
+def clear_status():
+    try:
+        os.remove(STATUS_PATH)
+    except Exception:
+        pass
 
 
 _log_lock = threading.Lock()
@@ -543,8 +587,10 @@ class Bridge:
         self.heartbeat_seconds = float(config.get("heartbeat_seconds", 5.0))
         self._stop = threading.Event()
         self._connected = None
+        self._detail = ""
         self._reported_mute = "unset"
         self._last_heartbeat = 0.0
+        self._last_status_write = 0.0
 
     def stop(self):
         self._stop.set()
@@ -553,11 +599,30 @@ class Bridge:
         if ok == self._connected:
             return
         self._connected = ok
+        self._detail = detail
         if ok:
             log(f"Connected to Frivo at {self.client.base_url}")
         else:
             log(f"Frivo is not reachable at {self.client.base_url} — {detail}")
             log("Still trying. This resolves itself when Frivo is running again.")
+        # Published on the transition as well as on the timer below, so the
+        # launcher window reflects a reconnect within a refresh rather than
+        # within the publish interval.
+        self._publish_status()
+
+    def _publish_status(self, running=True):
+        muted, _updated_at, packets = self.watcher.state()
+        self._last_status_write = time.monotonic()
+        write_status(
+            running=running,
+            frivo_url=self.client.base_url,
+            connected=bool(self._connected),
+            detail=self._detail,
+            listen_port=self.watcher.port,
+            vrchat_send_port=self.sender.port,
+            vrchat_packets=packets,
+            muted=muted,
+        )
 
     def _push_state(self):
         muted, _updated_at, packets = self.watcher.state()
@@ -611,6 +676,9 @@ class Bridge:
         if not self.client.base_url:
             log("No Frivo address is configured.")
             log(f"Set frivo_url in {CONFIG_PATH}, or run setup again.")
+            self._connected = False
+            self._detail = "no address configured"
+            self._publish_status(running=False)
             return 1
 
         log(f"{APP_NAME} {VERSION}")
@@ -630,6 +698,11 @@ class Bridge:
             while not self._stop.is_set():
                 self._push_state()
                 self._pump_outbox()
+                # Republished on a slow timer even when nothing changed. The
+                # timestamp is what tells a reader this process is still
+                # alive, so it has to keep moving.
+                if (time.monotonic() - self._last_status_write) >= 2.0:
+                    self._publish_status()
                 self._stop.wait(self.poll_seconds)
         except KeyboardInterrupt:
             pass
@@ -637,6 +710,7 @@ class Bridge:
             log("Stopping.")
             self.sender.stop()
             self.watcher.stop()
+            clear_status()
         return 0
 
 
@@ -702,7 +776,26 @@ def main(argv):
     if "--check" in argv:
         return run_diagnostics(config)
 
-    return Bridge(config).run()
+    bridge = Bridge(config)
+
+    # Windows stops this with a hard kill, which no handler survives — the
+    # launcher's staleness check is what covers that case. This is for the
+    # ordinary termination signals, where leaving a status file claiming a
+    # live connection would be a lie the moment the process is gone.
+    def handle_signal(_number, _frame):
+        bridge.stop()
+
+    for name in ("SIGTERM", "SIGINT", "SIGBREAK"):
+        number = getattr(signal, name, None)
+        if number is None:
+            continue
+        try:
+            signal.signal(number, handle_signal)
+        except (ValueError, OSError):
+            # Not the main thread, or unsupported on this platform.
+            pass
+
+    return bridge.run()
 
 
 if __name__ == "__main__":

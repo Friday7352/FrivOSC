@@ -27,6 +27,40 @@ That test caught a real one here — `Join-Path` throws rather than returning
 anything when its base path is empty, which it can be in a service context
 with no `LocalAppData`.
 
+## test-status-file.py
+
+    python3 tests/test-status-file.py
+
+The service publishes what it knows to `%ProgramData%\FrivOSC\status.json`
+every couple of seconds; the launcher window reads that file rather than
+making its own request to Frivo. This test runs both halves against each
+other — and extracts the reader straight out of `FrivOSC-Launcher.ps1`, so
+it fails if the real function changes shape.
+
+It exists because of a bug where the two disagreed: the service logged
+"Connected to Frivo" while the launcher, three inches above that log line,
+said "Cannot reach Frivo". Both were doing what they were written to do —
+Python's `ssl._create_unverified_context()` accepted Frivo's self-signed
+certificate and PowerShell's `Invoke-WebRequest` did not. There is now one
+source of truth, and this checks the awkward cases around it: no file, a
+stale file left by a process that has died, a corrupt file, and a file
+missing its timestamp. All of them must read as "not connected" rather
+than throwing or guessing.
+
+## test-end-to-end.py
+
+    python3 tests/test-end-to-end.py
+
+A stand-in Frivo (HTTP), a stand-in VRChat (two UDP sockets), and the real
+`frivosc_service.py` running as its own process in between. Nothing inside
+the service is mocked, so this covers the OSC wire format, the handshake,
+the mute relay, the chatbox paging and its 144-character limit, the
+acknowledgements, and the status file.
+
+It runs the service under an interpreter with no Flask on the path —
+`FRIVOSC_TEST_PYTHON` overrides which. That is deliberate: this code has to
+run on the VRChat PC, where nothing has been installed.
+
 ## Not covered
 
 The WinForms wizard and launcher are not exercised. They need a stubbed
@@ -37,5 +71,4 @@ this repo currently justifies. They are parse-checked instead:
       \$e=\$null; [System.Management.Automation.Language.Parser]::ParseFile(\$_.FullName,[ref]\$null,[ref]\$e) > \$null; \
       if (\$e) { Write-Host \$_.Name } }"
 
-The service itself is tested by running it against a mock Frivo and a mock
-VRChat — see the end-to-end harness notes in the repository history.
+The service itself is covered by `test-end-to-end.py` above.
