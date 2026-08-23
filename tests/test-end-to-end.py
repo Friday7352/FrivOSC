@@ -159,6 +159,68 @@ if pages_seen:
     check("no page exceeds VRChat's 144 chars",
           all(len(p.split(b"\x00")[1] if False else p) < 400 for p in pages_seen))
 
+print("\n--- unmute: the virtual mute key ---")
+# The only lever VRChat gives is /input/Voice, a button. MuteSelf is output
+# only. So this checks the tap goes out as a proper press-and-release, only
+# when VRChat has actually said we are muted, and never in the direction
+# that would silence someone.
+
+def drain(sock):
+    packets = []
+    sock.settimeout(0.4)
+    while True:
+        try:
+            packet, _ = sock.recvfrom(4096)
+        except socket.timeout:
+            return packets
+        packets.append(packet)
+
+
+def voice_packets(packets):
+    return [p for p in packets if b"/input/Voice" in p]
+
+
+# Currently unmuted (the test left it that way). An unmute here must do
+# nothing at all — pressing the button would mute them.
+drain(vrchat)
+outbox.append({"id": "u1", "text": "", "unmute": True})
+time.sleep(1.5)
+check("no key press while already unmuted", not voice_packets(drain(vrchat)))
+check("but the request is still acknowledged, not redelivered forever",
+      any(a.get("id") == "u1" for a in acks), str(acks))
+
+# Now muted.
+src.sendto(mute_msg(True), ("127.0.0.1", LISTEN_PORT))
+time.sleep(1.0)
+drain(vrchat)
+outbox.append({"id": "u2", "text": "", "unmute": True})
+time.sleep(1.5)
+presses = voice_packets(drain(vrchat))
+check("muted: the key is tapped", len(presses) >= 2, "%d packet(s)" % len(presses))
+if len(presses) >= 2:
+    # ",T" and ",F" — booleans with no payload, which is what VRChat's own
+    # docs describe for buttons. python-osc sends ",i" instead, and that is
+    # what the open input-bindings bug is reported against.
+    check("pressed as a boolean true, not an int", presses[0].endswith(b",T\x00\x00"),
+          repr(presses[0]))
+    check("and released afterwards", presses[1].endswith(b",F\x00\x00"),
+          repr(presses[1]))
+    check("released, so VRChat gives the mute key back",
+          any(p.endswith(b",F\x00\x00") for p in presses), repr(presses))
+
+# The success path: VRChat confirms by sending a new MuteSelf, which is the
+# only way to know a tap landed. Without this the service would have to
+# assume, and assuming is what hides a push-to-talk setup.
+src.sendto(mute_msg(False), ("127.0.0.1", LISTEN_PORT))
+time.sleep(1.2)
+
+# A second request straight away must be swallowed by the cooldown.
+drain(vrchat)
+outbox.append({"id": "u3", "text": "", "unmute": True})
+time.sleep(1.5)
+check("a repeat inside the cooldown does not press again",
+      not voice_packets(drain(vrchat)))
+
 print("\n--- status file ---")
 # Read before stopping: a clean shutdown deletes it, which is itself the
 # behaviour that stops the launcher reporting a connection from a dead
@@ -179,13 +241,20 @@ if os.path.exists(status_path):
           published.get("chatbox_total", 0) >= 2, str(published))
     check("and timestamps the last one",
           abs(published.get("chatbox_last", 0) - time.time()) < 60, str(published))
+    check("it counts the unmutes it sent",
+          published.get("unmute_total", 0) >= 1, str(published))
 
 proc.terminate()
 try: out, _ = proc.communicate(timeout=5)
 except subprocess.TimeoutExpired: proc.kill(); out, _ = proc.communicate()
 
 print("\n--- service log ---")
-print("\n".join(out.strip().split("\n")[:14]))
+lines = out.strip().split("\n")
+print("\n".join(lines[:20]))
+check("the log says the tap worked once VRChat confirmed it",
+      any("Unmuted." in line for line in lines), "not in the log")
+check("and does not claim a push-to-talk failure when it did work",
+      not any("did not unmute" in line for line in lines), "it reported a failure")
 
 if os.path.exists(status_path):
     check("stopping cleanly removes the status file", False, "still present")

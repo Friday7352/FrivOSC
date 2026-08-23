@@ -88,6 +88,7 @@ on a clean stop — there is nothing in it worth keeping.
 | Key | Default | What it is |
 | --- | --- | --- |
 | `frivo_url` | — | Where Frivo is, e.g. `https://192.168.1.50:5000` |
+| `stop_on_close` | `false` | Stop relaying when the FrivOSC window is closed |
 | `listen_port` | `9001` | Where VRChat sends its OSC output |
 | `vrchat_send_port` | `9000` | Where VRChat listens, for chatbox messages |
 | `verify_tls` | `false` | See below |

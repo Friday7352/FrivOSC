@@ -23,7 +23,10 @@ $ServicePython = Join-Path $Root '.venv\Scripts\python.exe'
 $ServiceScript = Join-Path $Root 'frivosc_service.py'
 
 function Read-FrivOSCConfig {
-    $config = [ordered]@{ frivo_url = ''; listen_port = 9001; vrchat_send_port = 9000 }
+    # stop_on_close defaults to false: FrivOSC is meant to be invisible, and
+    # closing a status window is not a request to stop relaying.
+    $config = [ordered]@{ frivo_url = ''; listen_port = 9001; vrchat_send_port = 9000
+                          stop_on_close = $false }
     try {
         if (Test-Path -LiteralPath $ConfigPath -PathType Leaf) {
             $saved = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
@@ -33,12 +36,58 @@ function Read-FrivOSCConfig {
     return $config
 }
 
-function Save-FrivOSCUrl([string] $Url) {
+function Save-FrivOSCConfigValue([string] $Name, $Value) {
+    <#
+        Read, change one key, write the whole thing back. The service owns
+        this file too, so anything not named here has to survive untouched.
+    #>
     $config = Read-FrivOSCConfig
-    $config['frivo_url'] = $Url.TrimEnd('/')
+    $config[$Name] = $Value
     try {
         New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
         [IO.File]::WriteAllText($ConfigPath, ($config | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+        return $true
+    } catch { return $false }
+}
+
+function Save-FrivOSCUrl([string] $Url) {
+    return Save-FrivOSCConfigValue 'frivo_url' ($Url.TrimEnd('/'))
+}
+
+function Test-FrivOSCStartsWithWindows {
+    <#
+        Setup registers the scheduled task either with an at-logon trigger
+        or with none at all. A task with no trigger still runs when
+        something starts it by hand, which is exactly the "installed but
+        not automatic" state — so the presence of a trigger is the answer.
+    #>
+    try {
+        $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+        return @($task.Triggers).Count -gt 0
+    } catch { return $false }
+}
+
+function Set-FrivOSCStartsWithWindows([bool] $Enabled) {
+    <#
+        Adds or removes the at-logon trigger on the existing task rather
+        than re-registering it, so the task keeps the action, principal and
+        settings that setup chose.
+
+        Returns $false when Windows refuses. The task is registered for the
+        Users group, and editing it can need administrator rights depending
+        on how the machine is configured; the caller says so rather than
+        leaving a checkbox showing a state that was never applied.
+    #>
+    try {
+        $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+        if ($Enabled) {
+            $task.Triggers = @(New-ScheduledTaskTrigger -AtLogOn)
+        } else {
+            # $null rather than @(): an empty array is rejected by
+            # Set-ScheduledTask, while $null clears the collection.
+            $task.Triggers = $null
+        }
+        Set-ScheduledTask -InputObject $task -ErrorAction Stop | Out-Null
         return $true
     } catch { return $false }
 }
@@ -288,11 +337,20 @@ $statusLabel.Location = [Drawing.Point]::new(98, 52)
 $statusLabel.Size = [Drawing.Size]::new(340, 20)
 $statusLabel.Text = 'Checking...'
 
+# Two views in the same space, swapped rather than stacked — the same
+# shape Frivo's launcher uses, so the two windows behave alike.
 $body = New-Object System.Windows.Forms.Panel
 $body.Location = [Drawing.Point]::new(0, 84)
 $body.Size = [Drawing.Size]::new(470, 552)
 $body.BackColor = $Theme.Bg
 $form.Controls.Add($body)
+
+$settingsView = New-Object System.Windows.Forms.Panel
+$settingsView.Location = [Drawing.Point]::new(0, 84)
+$settingsView.Size = [Drawing.Size]::new(470, 552)
+$settingsView.BackColor = $Theme.Bg
+$settingsView.Visible = $false
+$form.Controls.Add($settingsView)
 
 # ---------- connection ----------
 $frivoCard = New-FrivoCard -Theme $Theme -Parent $body -X 24 -Y 10 -W 422 -H 100
@@ -374,12 +432,43 @@ $logFrame = $logBox.Parent
 $logFrame.Visible = $false
 
 $powerButton = New-FrivoButton -Theme $Theme -Parent $body -Text 'Start FrivOSC' -X 24 -Y 402 -W 422 -H 46 -Primary $true
-$logButton = New-FrivoButton -Theme $Theme -Parent $body -Text 'Open log folder' -X 24 -Y 460 -W 205 -H 38
+$settingsButton = New-FrivoButton -Theme $Theme -Parent $body -Text 'Settings' -X 24 -Y 460 -W 205 -H 38
 $closeButton = New-FrivoButton -Theme $Theme -Parent $body -Text 'Close' -X 241 -Y 460 -W 205 -H 38
 $hintLabel = New-FrivoLabel -Theme $Theme -Parent $body -Text '' -X 28 -Y 506 -W 414 -H 20 -Font $Theme.FontSmall -Color $Theme.Faint
 $hintLabel.TextAlign = 'MiddleCenter'
 
+# ==================================================================
+# Settings view
+# ==================================================================
+
+$backButton = New-FrivoButton -Theme $Theme -Parent $settingsView -Text ([string][char]0x2190 + '  Back') -X 24 -Y 6 -W 100 -H 32
+$backButton.Font = $Theme.FontUI
+
+[void](New-FrivoLabel -Theme $Theme -Parent $settingsView -Text 'WHEN I CLOSE THIS WINDOW' -X 30 -Y 54 -W 380 -H 14 -Font $Theme.FontCaps -Color $Theme.Faint)
+$closeCard = New-FrivoCard -Theme $Theme -Parent $settingsView -X 24 -Y 74 -W 422 -H 104
+
+$keepRadio = New-FrivoRadio -Theme $Theme -Parent $closeCard -Text 'Keep FrivOSC running in the background' -X 18 -Y 14 -W 390
+[void](New-FrivoLabel -Theme $Theme -Parent $closeCard -Text 'VRChat keeps getting chatbox messages and mute updates.' -X 42 -Y 38 -W 360 -H 22 -Font $Theme.FontSmall -Color $Theme.Dim)
+
+$stopRadio = New-FrivoRadio -Theme $Theme -Parent $closeCard -Text 'Stop FrivOSC' -X 18 -Y 62 -W 390
+[void](New-FrivoLabel -Theme $Theme -Parent $closeCard -Text 'Nothing reaches VRChat until you open this again.' -X 42 -Y 84 -W 360 -H 20 -Font $Theme.FontSmall -Color $Theme.Dim)
+
+[void](New-FrivoLabel -Theme $Theme -Parent $settingsView -Text 'STARTUP' -X 30 -Y 192 -W 380 -H 14 -Font $Theme.FontCaps -Color $Theme.Faint)
+$startCard = New-FrivoCard -Theme $Theme -Parent $settingsView -X 24 -Y 212 -W 422 -H 78
+$startupCheck = New-FrivoCheck -Theme $Theme -Parent $startCard -Text 'Start FrivOSC when I sign in to Windows' -X 18 -Y 14 -W 390
+$startupNote = New-FrivoLabel -Theme $Theme -Parent $startCard -Text 'Runs in the background from sign-in, with no window.' -X 42 -Y 38 -W 360 -H 36 -Font $Theme.FontSmall -Color $Theme.Dim
+
+[void](New-FrivoLabel -Theme $Theme -Parent $settingsView -Text 'TROUBLESHOOTING' -X 30 -Y 304 -W 380 -H 14 -Font $Theme.FontCaps -Color $Theme.Faint)
+$toolsCard = New-FrivoCard -Theme $Theme -Parent $settingsView -X 24 -Y 324 -W 422 -H 76
+[void](New-FrivoLabel -Theme $Theme -Parent $toolsCard -Text 'Config and log files live in ProgramData.' -X 18 -Y 16 -W 250 -H 44 -Font $Theme.FontSmall -Color $Theme.Dim)
+$logButton = New-FrivoButton -Theme $Theme -Parent $toolsCard -Text 'Open log folder' -X 268 -Y 20 -W 136 -H 36
+$logButton.Font = $Theme.FontUI
+
+$settingsHint = New-FrivoLabel -Theme $Theme -Parent $settingsView -Text '' -X 28 -Y 414 -W 414 -H 40 -Font $Theme.FontSmall -Color $Theme.Faint
+$settingsHint.TextAlign = 'TopCenter'
+
 $script:ActivityOpen = $false
+$script:SettingsLoading = $false
 
 function Set-FrivOSCActivityOpen([bool] $Open) {
     <#
@@ -498,10 +587,13 @@ function Update-FrivOSCStatus {
     }
     $chatTile.Icon.Invalidate()
 
-    if ($running) {
-        $hintLabel.Text = 'Closing this window leaves FrivOSC running.'
-    } else {
+    $stopOnClose = ($current.Contains('stop_on_close') -and [bool]$current['stop_on_close'])
+    if (-not $running) {
         $hintLabel.Text = 'Stopped. Nothing is being sent to VRChat.'
+    } elseif ($stopOnClose) {
+        $hintLabel.Text = 'Closing this window stops FrivOSC.'
+    } else {
+        $hintLabel.Text = 'Closing this window leaves FrivOSC running.'
     }
 
     if ($script:ActivityOpen) {
@@ -520,6 +612,80 @@ function Wait-FrivOSCSettle([int] $Milliseconds) {
         Start-Sleep -Milliseconds 60
     }
 }
+
+function Show-FrivOSCSettings([bool] $Open) {
+    if ($Open) {
+        # Collapse the log first. It resizes the window, and a settings page
+        # sitting in a window sized for something else looks broken.
+        Set-FrivOSCActivityOpen $false
+        Sync-FrivOSCSettingsView
+    }
+    $body.Visible = -not $Open
+    $settingsView.Visible = $Open
+}
+
+function Sync-FrivOSCSettingsView {
+    <#
+        Reads the real state each time the page opens rather than trusting
+        what the controls were left showing — the scheduled task can be
+        changed from outside this window, and a checkbox that disagrees
+        with Task Scheduler is worse than no checkbox.
+    #>
+    $script:SettingsLoading = $true
+    try {
+        $current = Read-FrivOSCConfig
+        $stopOnClose = $false
+        if ($current.Contains('stop_on_close')) { $stopOnClose = [bool]$current['stop_on_close'] }
+        $keepRadio.Checked = -not $stopOnClose
+        $stopRadio.Checked = $stopOnClose
+
+        $startupCheck.Checked = Test-FrivOSCStartsWithWindows
+        $settingsHint.Text = ''
+    } finally {
+        $script:SettingsLoading = $false
+    }
+}
+
+$settingsButton.Add_Click({ Show-FrivOSCSettings $true })
+$backButton.Add_Click({ Show-FrivOSCSettings $false; Update-FrivOSCStatus })
+
+$keepRadio.Add_CheckedChanged({
+    if ($script:SettingsLoading -or -not $keepRadio.Checked) { return }
+    if (-not (Save-FrivOSCConfigValue 'stop_on_close' $false)) {
+        $settingsHint.ForeColor = $Theme.Warn
+        $settingsHint.Text = 'Could not save. Try opening FrivOSC as administrator.'
+    } else {
+        $settingsHint.ForeColor = $Theme.Faint
+        $settingsHint.Text = ''
+    }
+})
+
+$stopRadio.Add_CheckedChanged({
+    if ($script:SettingsLoading -or -not $stopRadio.Checked) { return }
+    if (-not (Save-FrivOSCConfigValue 'stop_on_close' $true)) {
+        $settingsHint.ForeColor = $Theme.Warn
+        $settingsHint.Text = 'Could not save. Try opening FrivOSC as administrator.'
+    } else {
+        $settingsHint.ForeColor = $Theme.Faint
+        $settingsHint.Text = ''
+    }
+})
+
+$startupCheck.Add_CheckedChanged({
+    if ($script:SettingsLoading) { return }
+    $wanted = $startupCheck.Checked
+    if (Set-FrivOSCStartsWithWindows $wanted) {
+        $settingsHint.ForeColor = $Theme.Faint
+        $settingsHint.Text = ''
+        return
+    }
+    # Put the box back rather than leaving it claiming something Windows
+    # refused to do.
+    $script:SettingsLoading = $true
+    try { $startupCheck.Checked = -not $wanted } finally { $script:SettingsLoading = $false }
+    $settingsHint.ForeColor = $Theme.Warn
+    $settingsHint.Text = "Windows would not change the scheduled task.`r`nTry opening FrivOSC as administrator."
+})
 
 $activityButton.Add_Click({
     Set-FrivOSCActivityOpen (-not $script:ActivityOpen)
@@ -581,6 +747,16 @@ $refresh = New-Object System.Windows.Forms.Timer
 $refresh.Interval = 1500
 $refresh.Add_Tick({ Update-FrivOSCStatus })
 $form.Add_Shown({ Set-FrivOSCActivityOpen $false; Update-FrivOSCStatus; $refresh.Start() })
-$form.Add_FormClosing({ $refresh.Stop() })
+$form.Add_FormClosing({
+    $refresh.Stop()
+    # Closing a status window is not, by itself, a request to stop relaying
+    # — but it is if you asked for it to be.
+    try {
+        $current = Read-FrivOSCConfig
+        if ($current.Contains('stop_on_close') -and [bool]$current['stop_on_close']) {
+            Stop-FrivOSCService
+        }
+    } catch { }
+})
 
 [void] $form.ShowDialog()

@@ -95,6 +95,16 @@ DEFAULT_CONFIG = {
     # Resend mute state even when unchanged, so Frivo can tell "still
     # unmuted" from "FrivOSC died".
     "heartbeat_seconds": 5.0,
+    # How long the virtual Voice button is held down. VRChat blocks your own
+    # keyboard and controller mute for exactly as long as this is held, so
+    # it is a tap, not a press.
+    "unmute_hold_seconds": 0.12,
+    # How long to wait for VRChat to confirm the tap worked by sending a new
+    # MuteSelf. Past this we say so rather than assuming.
+    "unmute_verify_seconds": 2.0,
+    # Ignore repeat unmute requests this soon after one. Sending three
+    # messages quickly should not press the button three times.
+    "unmute_cooldown_seconds": 3.0,
 }
 
 
@@ -495,6 +505,48 @@ class ChatboxSender:
                 self.queue.task_done()
 
 
+class VoiceButton:
+    """
+    Taps VRChat's virtual mute key.
+
+    There is no way to *set* mute over OSC. `MuteSelf` is output only —
+    VRChat tells you what it is and will not be told. The only lever is
+    `/input/Voice`, which is a button, and with VRChat's default "Toggle
+    Voice" setting a press flips whatever the current state is.
+
+    That has three consequences, and all three shape this class:
+
+    1. Nothing is sent unless VRChat has actually said you are muted. A
+       blind press on an unknown state is a coin flip that can silence you.
+    2. It is a tap, not a hold. VRChat blocks your own keyboard and
+       controller mute for exactly as long as the button is held down, so
+       holding it would take your mute key away.
+    3. The result is checked rather than assumed. If "Toggle Voice" is off,
+       VRChat treats the same address as push-to-talk — false means muted —
+       and a tap ends with you exactly as muted as you started. That cannot
+       be detected up front, so it is reported after the fact.
+
+    This only ever unmutes. Muting someone who did not ask to be muted is a
+    worse failure than not unmuting them, and refusing to send that
+    direction at all makes it impossible.
+    """
+
+    def __init__(self, port, hold_seconds=0.12):
+        self.port = port
+        self.hold_seconds = max(0.05, min(0.5, float(hold_seconds)))
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._lock = threading.Lock()
+
+    def tap(self):
+        """Press and release. Booleans, not ints — see osc_message."""
+        with self._lock:
+            self._sock.sendto(osc_message("/input/Voice", True), ("127.0.0.1", self.port))
+            time.sleep(self.hold_seconds)
+            # Released even if the press somehow failed: leaving it held is
+            # how someone loses their own mute key until VRChat restarts.
+            self._sock.sendto(osc_message("/input/Voice", False), ("127.0.0.1", self.port))
+
+
 # =============================================================================
 # Talking to Frivo
 # =============================================================================
@@ -578,6 +630,10 @@ class Bridge:
         self.config = config
         self.watcher = MuteWatcher(int(config.get("listen_port", 9001)))
         self.sender = ChatboxSender(int(config.get("vrchat_send_port", 9000)))
+        self.voice = VoiceButton(
+            int(config.get("vrchat_send_port", 9000)),
+            hold_seconds=float(config.get("unmute_hold_seconds", 0.12)),
+        )
         self.client = FrivoClient(
             config.get("frivo_url", ""),
             verify_tls=bool(config.get("verify_tls", False)),
@@ -596,6 +652,15 @@ class Bridge:
         # one did. Wall clock, because a different process reads it.
         self._chatbox_total = 0
         self._chatbox_last = 0.0
+        self._unmute_total = 0
+        # Wall clock, for the status file a different process reads.
+        self._unmute_last = 0.0
+        # Monotonic, for the cooldown. Keeping the two apart because mixing
+        # the clocks here would make the cooldown misbehave whenever the
+        # system clock moves.
+        self._unmute_cooldown_at = 0.0
+        self.unmute_verify_seconds = float(config.get("unmute_verify_seconds", 2.0))
+        self.unmute_cooldown_seconds = float(config.get("unmute_cooldown_seconds", 3.0))
 
     def stop(self):
         self._stop.set()
@@ -629,6 +694,8 @@ class Bridge:
             muted=muted,
             chatbox_total=self._chatbox_total,
             chatbox_last=self._chatbox_last,
+            unmute_total=self._unmute_total,
+            unmute_last=self._unmute_last,
         )
 
     def _push_state(self):
@@ -649,6 +716,54 @@ class Bridge:
         except Exception as exc:
             self._note_connection(False, str(exc))
 
+    def _unmute(self):
+        """Tap the mute key, but only if VRChat says we are actually muted."""
+        muted, _updated_at, packets = self.watcher.state()
+
+        if packets == 0:
+            log("Unmute asked for, but VRChat has not reported a mute state yet.")
+            log("Mute or unmute once in VRChat so it starts telling us.")
+            return
+        if muted is None:
+            log("Unmute asked for, but the mute state is unknown. Doing nothing.")
+            return
+        if not muted:
+            # Already talking. Pressing the button here would mute them,
+            # which is the one outcome this must never produce.
+            return
+
+        now = time.monotonic()
+        if self._unmute_cooldown_at and (now - self._unmute_cooldown_at) < self.unmute_cooldown_seconds:
+            return
+        self._unmute_cooldown_at = now
+
+        log("Muted in VRChat — tapping the mute key.")
+        try:
+            self.voice.tap()
+        except Exception as exc:
+            log(f"Could not send the unmute: {exc}")
+            return
+
+        self._unmute_total += 1
+        self._unmute_last = time.time()
+
+        # VRChat sends MuteSelf when it changes, so success is observable
+        # rather than assumed.
+        deadline = time.monotonic() + self.unmute_verify_seconds
+        while time.monotonic() < deadline:
+            if self._stop.wait(0.1):
+                return
+            muted_now, _updated, _packets = self.watcher.state()
+            if muted_now is False:
+                log("Unmuted.")
+                self._publish_status()
+                return
+
+        log("VRChat did not unmute. Check Settings > Voice: with 'Toggle Voice'")
+        log("off, VRChat treats this as push-to-talk and it cannot be held")
+        log("open from here without taking away your own mute key.")
+        self._publish_status()
+
     def _pump_outbox(self):
         try:
             response = self.client.fetch_outbox()
@@ -658,8 +773,20 @@ class Bridge:
             return
 
         for message in (response or {}).get("messages") or []:
-            text = (message or {}).get("text") or ""
+            message = message or {}
+            # Handled before the text, and whether or not there is any: an
+            # unmute is queued on its own when the chatbox is switched off.
+            if message.get("unmute"):
+                self._unmute()
+
+            text = message.get("text") or ""
             if not text:
+                # Still acknowledged, or Frivo hands it back on every poll.
+                try:
+                    if message.get("id"):
+                        self.client.acknowledge(message["id"], 0)
+                except Exception as exc:
+                    log(f"Could not acknowledge {message.get('id')}: {exc}")
                 continue
             try:
                 pages = self.sender.send(

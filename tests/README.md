@@ -79,6 +79,21 @@ were being built inside an array literal — evaluated before the guard that
 was supposed to skip them. Same shape as the `Find-InstalledPython` bug in
 FrivOSC.
 
+## test-launcher-config.ps1
+
+    pwsh -NoProfile -File tests/test-launcher-config.ps1
+
+The launcher's settings page writes one key at a time into a config file the
+*service* also owns, so anything not being changed has to survive — including
+keys this window has never heard of. And `stop_on_close` has to default to
+false: FrivOSC is meant to be invisible, closing a status window is not a
+request to stop relaying to VRChat, and a missing key must not read as
+"stop". Neither is visible by reading the code, so both are checked, along
+with a corrupt file falling back to the safe default rather than throwing.
+
+Extracted from `FrivOSC-Launcher.ps1` at run time, so it fails if the real
+functions change shape.
+
 ## preview-icons.py
 
     python3 tests/preview-icons.py
