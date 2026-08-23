@@ -20,6 +20,18 @@ one returns `$false` rather than throwing.
 port, or a certificate path. The tests write a config, mutate it the way a
 user would, run an update over the top, and check everything survives.
 
+It also covers **which processes setup is allowed to kill before an update**.
+The status window can be sitting in the notification area holding
+`FrivOSCHost.exe` open, and Windows will not replace a running executable —
+so setup closes it first, asking politely before killing. Getting the match
+wrong is expensive in both directions, so `Test-IsFrivOSCLauncherProcess` is
+tested against fakes: the window is matched by path (a FrivOSC installed in
+another folder is not this install's to close) and by command line when run
+from source, while setup itself, the uninstaller, the service, an unrelated
+PowerShell, and processes with null paths are all left alone. Two assertions
+are named SETUP IS NEVER KILLED, because that is the failure that would
+break an update halfway through.
+
 There is also a StrictMode check on `Find-InstalledPython`, which is the
 class of bug that shipped in Frivo 1.1.2: a collection that comes back
 empty, unwraps to `$null`, and throws when something reads `.Count` off it.
@@ -111,6 +123,10 @@ rather than `ShowDialog` (which ends the moment the form hides), a
 and hides instead of exiting, the single-instance guard that stops a second
 window arguing with the first, and an error path that reaches a log and a
 message box rather than nowhere.
+
+It also checks the quit handshake setup uses before an update: the launcher
+listens on a named event, and clears it at startup so a leftover signal from
+a previous run does not make it quit the moment it opens.
 
 It cannot prove the tray works. It can prove nobody quietly removed the
 parts that let it. Comments are stripped before matching, so a comment

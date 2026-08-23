@@ -74,6 +74,15 @@ From a terminal, `frivosc_service.py --check` answers the same questions:
     "C:\Program Files\FrivOSC\.venv\Scripts\python.exe" ^
       "C:\Program Files\FrivOSC\frivosc_service.py" --check
 
+## Updating
+
+Run the installer again over an existing install. It closes the FrivOSC
+window first if one is open — including one sitting in the notification
+area — because Windows will not replace a running executable and the update
+would otherwise fail partway through on a locked file. The window is asked
+to close before it is killed, so its tray icon goes with it. Settings in
+`config.json` are kept.
+
 ## Settings
 
 Settings live in `C:\ProgramData\FrivOSC\config.json`, alongside the log

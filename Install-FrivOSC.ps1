@@ -278,7 +278,115 @@ function Remove-FrivOSCInstalledApp {
     Remove-Item -LiteralPath 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\FrivOSC' -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+function Test-IsFrivOSCLauncherProcess($Process, [string] $InstallRoot, [int] $SelfPid) {
+    <#
+        Is this process a FrivOSC status window belonging to this install?
+
+        Pulled out on its own because getting it wrong is expensive in both
+        directions: too loose and setup kills itself partway through an
+        update, too tight and it leaves the window holding FrivOSCHost.exe
+        open and the update fails on a locked file.
+    #>
+    if (-not $Process) { return $false }
+    # Never this process. Setup runs from a temporary payload folder rather
+    # than the install folder, so the path test below already excludes it —
+    # but this is not the place to rely on that.
+    if ($Process.ProcessId -eq $SelfPid) { return $false }
+
+    $commandLine = ''
+    if ($Process.PSObject.Properties['CommandLine'] -and $Process.CommandLine) {
+        $commandLine = [string]$Process.CommandLine
+    }
+    # Setup and the uninstaller are PowerShell too, and both mention
+    # FrivOSC. Neither is a status window.
+    if ($commandLine -match 'FrivOSC-Setup\.ps1|Install-FrivOSC\.ps1|FrivOSC-Uninstall\.ps1') {
+        return $false
+    }
+
+    $name = [string]$Process.Name
+    $executable = ''
+    if ($Process.PSObject.Properties['ExecutablePath'] -and $Process.ExecutablePath) {
+        $executable = [string]$Process.ExecutablePath
+    }
+
+    # The compiled host, running out of the folder about to be replaced.
+    # Another install of FrivOSC elsewhere on the machine is not ours to
+    # close, which is why this is a path test and not a name test.
+    if ($name -eq 'FrivOSCHost.exe') {
+        if (-not $InstallRoot -or -not $executable) { return $false }
+        return $executable.StartsWith($InstallRoot, [StringComparison]::OrdinalIgnoreCase)
+    }
+
+    # Or a plain PowerShell running the launcher script, which is how it
+    # starts when someone runs it from a source checkout.
+    if ($name -in @('powershell.exe', 'pwsh.exe')) {
+        return [bool]($commandLine -match 'FrivOSC-Launcher\.ps1')
+    }
+
+    return $false
+}
+
+function Stop-FrivOSCLauncher([string] $Target) {
+    <#
+        Closes the status window, wherever it is.
+
+        It can be sitting in the notification area rather than on screen,
+        which is the case that matters: FrivOSCHost.exe is running out of
+        the folder about to be overwritten, and Windows will not let anyone
+        replace a running executable. The update then fails partway through
+        with a file-in-use error, which is the worst possible moment.
+
+        Asked first, killed second. A killed launcher leaves its tray icon
+        behind as a ghost that only disappears when something makes Windows
+        repaint the notification area, and an update that leaves litter on
+        the taskbar looks broken even when it worked.
+    #>
+    $installRoot = ''
+    try { $installRoot = [IO.Path]::GetFullPath($Target).TrimEnd('\', '/') } catch { }
+
+    function Get-RunningLaunchers {
+        try {
+            $processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+        } catch { return @() }
+        $found = @($processes | Where-Object {
+            Test-IsFrivOSCLauncherProcess $_ $installRoot $PID
+        })
+        # A single match unwraps to a bare object, and .Count on that is 1
+        # by luck rather than by design. Comma keeps it an array.
+        return ,$found
+    }
+
+    $launchers = @(Get-RunningLaunchers)
+    if ($launchers.Count -eq 0) { return }
+
+    Write-SetupLog ('Asking {0} FrivOSC window(s) to close' -f $launchers.Count)
+    try {
+        $quitSignal = New-Object System.Threading.EventWaitHandle($false,
+            [System.Threading.EventResetMode]::ManualReset, 'Local\FrivOSCLauncherQuit')
+        [void]$quitSignal.Set()
+        # The launcher checks this on its refresh timer, so give it a few
+        # ticks rather than one.
+        for ($waited = 0; $waited -lt 5000; $waited += 250) {
+            Start-Sleep -Milliseconds 250
+            if ((Get-RunningLaunchers).Count -eq 0) { break }
+        }
+        [void]$quitSignal.Reset()
+        $quitSignal.Dispose()
+    } catch { }
+
+    $stubborn = @(Get-RunningLaunchers)
+    foreach ($process in $stubborn) {
+        Write-SetupLog ('Closing FrivOSC window {0} the hard way' -f $process.ProcessId)
+        try { Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue } catch { }
+    }
+    if ($stubborn.Count -gt 0) { Start-Sleep -Milliseconds 600 }
+}
+
 function Stop-FrivOSCForUpdate([string] $Target) {
+    # The window first: it is the one holding an .exe open, and asking it to
+    # leave takes a moment.
+    Stop-FrivOSCLauncher $Target
+
     try { Stop-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue } catch { }
     # The task hosts a python.exe that holds the install folder open. End
     # only the interpreters running out of this exact installation.

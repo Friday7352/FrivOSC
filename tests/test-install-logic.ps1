@@ -40,6 +40,7 @@ $wanted = @(
     'Write-FrivOSCInstallMarker'
     'Get-ExistingFrivOSCInstall'
     'Find-InstalledPython'
+    'Test-IsFrivOSCLauncherProcess'
 )
 foreach ($name in $wanted) {
     $fn = $ast.Find({
@@ -149,6 +150,69 @@ try {
 } finally {
     Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+Write-Host "`nUpdating over a running FrivOSC"
+# The status window can be sitting in the notification area holding
+# FrivOSCHost.exe open, and Windows will not let a running executable be
+# replaced — so setup has to close it first. Getting the match wrong is
+# expensive both ways: too loose and setup kills itself partway through an
+# update, too tight and the update dies on a locked file.
+
+$installRoot = 'C:\Program Files\FrivOSC'
+function New-FakeProcess([int] $Id, [string] $Name, [string] $Path, [string] $CommandLine) {
+    [pscustomobject]@{ ProcessId = $Id; Name = $Name; ExecutablePath = $Path; CommandLine = $CommandLine }
+}
+
+Assert-True 'the status window is recognised' (Test-IsFrivOSCLauncherProcess `
+    (New-FakeProcess 100 'FrivOSCHost.exe' 'C:\Program Files\FrivOSC\FrivOSCHost.exe' '"FrivOSCHost.exe"') `
+    $installRoot 999)
+
+Assert-True 'run from source, it is still recognised' (Test-IsFrivOSCLauncherProcess `
+    (New-FakeProcess 101 'powershell.exe' 'C:\Windows\System32\powershell.exe' `
+        'powershell.exe -File "E:\GithubRepos\FrivOSC\FrivOSC-Launcher.ps1"') `
+    $installRoot 999)
+
+Assert-True 'SETUP IS NEVER KILLED — by pid' (-not (Test-IsFrivOSCLauncherProcess `
+    (New-FakeProcess 999 'FrivOSCHost.exe' 'C:\Program Files\FrivOSC\FrivOSCHost.exe' '"FrivOSCHost.exe"') `
+    $installRoot 999))
+
+Assert-True 'SETUP IS NEVER KILLED — by its command line' (-not (Test-IsFrivOSCLauncherProcess `
+    (New-FakeProcess 102 'powershell.exe' 'C:\Windows\System32\powershell.exe' `
+        'powershell.exe -File "C:\Users\x\AppData\Local\Temp\FrivOSCSetupPayload\FrivOSC-Setup.ps1"') `
+    $installRoot 999))
+
+Assert-True 'and neither is the uninstaller' (-not (Test-IsFrivOSCLauncherProcess `
+    (New-FakeProcess 103 'powershell.exe' 'C:\Windows\System32\powershell.exe' `
+        'powershell.exe -File "C:\Program Files\FrivOSC\FrivOSC-Uninstall.ps1"') `
+    $installRoot 999))
+
+# Another copy of FrivOSC installed elsewhere is not this install's to
+# close, which is why the host is matched on path rather than on name.
+Assert-True 'a FrivOSC in another folder is left alone' (-not (Test-IsFrivOSCLauncherProcess `
+    (New-FakeProcess 104 'FrivOSCHost.exe' 'D:\Portable\FrivOSC\FrivOSCHost.exe' '"FrivOSCHost.exe"') `
+    $installRoot 999))
+
+Assert-True 'an unrelated PowerShell is left alone' (-not (Test-IsFrivOSCLauncherProcess `
+    (New-FakeProcess 105 'powershell.exe' 'C:\Windows\System32\powershell.exe' 'powershell.exe -Command Get-Date') `
+    $installRoot 999))
+
+Assert-True 'and so is everything else on the machine' (-not (Test-IsFrivOSCLauncherProcess `
+    (New-FakeProcess 106 'chrome.exe' 'C:\Program Files\Google\Chrome\chrome.exe' 'chrome.exe') `
+    $installRoot 999))
+
+# The service is stopped separately, by its own venv path. It must not be
+# caught here as well, or it would be killed twice for different reasons.
+Assert-True 'the service itself is not treated as a window' (-not (Test-IsFrivOSCLauncherProcess `
+    (New-FakeProcess 107 'python.exe' 'C:\Program Files\FrivOSC\.venv\Scripts\python.exe' `
+        'python.exe -u "C:\Program Files\FrivOSC\frivosc_service.py"') `
+    $installRoot 999))
+
+# WMI hands back nulls more often than anyone expects.
+Assert-True 'a process with no path does not throw' (-not (Test-IsFrivOSCLauncherProcess `
+    (New-FakeProcess 108 'FrivOSCHost.exe' $null $null) $installRoot 999))
+Assert-True 'a null process does not throw' (-not (Test-IsFrivOSCLauncherProcess $null $installRoot 999))
+Assert-True 'and neither does an empty install root' (-not (Test-IsFrivOSCLauncherProcess `
+    (New-FakeProcess 109 'FrivOSCHost.exe' 'C:\Program Files\FrivOSC\FrivOSCHost.exe' '') '' 999))
 
 Write-Host ("`n{0} passed, {1} failed" -f $script:pass, $script:fail)
 if ($script:fail -gt 0) { exit 1 }

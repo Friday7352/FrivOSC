@@ -25,10 +25,19 @@ $createdMutex = $false
 $instanceLock = New-Object System.Threading.Mutex($true, 'Local\FrivOSCLauncher', [ref] $createdMutex)
 $showSignal = New-Object System.Threading.EventWaitHandle($false,
     [System.Threading.EventResetMode]::ManualReset, 'Local\FrivOSCLauncherShow')
+# How setup asks this window to go away before it replaces the files
+# underneath it. Killing it would work, but it would leave a dead tray icon
+# sitting there until something made Windows repaint the notification area.
+$quitSignal = New-Object System.Threading.EventWaitHandle($false,
+    [System.Threading.EventResetMode]::ManualReset, 'Local\FrivOSCLauncherQuit')
 if (-not $createdMutex) {
     [void] $showSignal.Set()
     exit
 }
+# Both are machine-wide and outlive whoever set them, so start from a clean
+# slate rather than acting on something left over from a previous run.
+[void] $showSignal.Reset()
+[void] $quitSignal.Reset()
 
 $LauncherLog = Join-Path $env:TEMP 'FrivOSC-Launcher.log'
 
@@ -842,6 +851,16 @@ $refresh.Add_Tick({
     if ($showSignal.WaitOne(0)) {
         [void]$showSignal.Reset()
         Show-FrivOSCWindow
+    }
+    # Setup is about to replace the files this window is running from.
+    # Leaving on request beats being killed: the tray icon goes with it.
+    if ($quitSignal.WaitOne(0)) {
+        [void]$quitSignal.Reset()
+        # The service is setup's to stop, not this window's — stopping it
+        # here would race with whatever setup is doing about it.
+        $script:Quitting = $true
+        $form.Close()
+        [System.Windows.Forms.Application]::Exit()
     }
 })
 $form.Add_Shown({ Set-FrivOSCActivityOpen $false; Update-FrivOSCStatus; $refresh.Start() })

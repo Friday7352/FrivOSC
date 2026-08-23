@@ -76,6 +76,17 @@ Check 'is stopped by a mutex' ($code -match 'if\(-not\$createdMutex\)') 'no guar
 Check 'and brings the first one forward' ($code -match 'showSignal') 'no signal'
 
 Write-Host ''
+Write-Host '--- getting out of the way of an update ---'
+# The window can be sitting in the notification area holding
+# FrivOSCHost.exe open, and Windows will not replace a running executable.
+# Setup asks it to leave rather than killing it, so the tray icon goes
+# with it instead of lingering as a ghost.
+Check 'it listens for setup asking it to quit' `
+    ($code -match 'FrivOSCLauncherQuit') 'setup has no way to ask'
+Check 'and the signal is cleared at startup, not acted on stale' `
+    ($code -match '\$quitSignal\.Reset\(\)') 'a leftover signal would quit it immediately'
+
+Write-Host ''
 Write-Host '--- failures have somewhere to land ---'
 # Opened from a shortcut, so an unhandled error has no console. This is the
 # same silence that made the setup wizard look like it did nothing at all.
@@ -87,4 +98,4 @@ if ($fails.Count) {
     Write-Host ("{0} failed: {1}" -f $fails.Count, ($fails -join ', '))
     exit 1
 }
-Write-Host '14 passed, 0 failed'
+Write-Host '16 passed, 0 failed'
