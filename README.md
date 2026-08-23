@@ -77,7 +77,9 @@ From a terminal, `frivosc_service.py --check` answers the same questions:
 ## Settings
 
 Settings live in `C:\ProgramData\FrivOSC\config.json`, alongside the log
-and `status.json`. The status file is how the FrivOSC window knows whether
+and `status.json`. The status file also carries the microphone state and a
+count of relayed chatbox messages, which is what the window's two indicator
+lights are reading.  The status file is how the FrivOSC window knows whether
 the connection to Frivo is up: the service writes what it sees there every
 couple of seconds, and the window reads it rather than testing the
 connection a second way of its own. It is rewritten constantly and deleted

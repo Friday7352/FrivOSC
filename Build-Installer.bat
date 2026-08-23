@@ -6,7 +6,8 @@ rem  Double-click this file from the project folder to create a fresh
 rem  dist\FrivOSCSetup.exe. The PowerShell build script compiles
 rem  FrivOSCHost.exe and FrivOSCSetupHost.exe — which is what picks up a
 rem  changed FrivOSCIcon.ico, since the icon is compiled into the exe —
-rem  and then runs Inno Setup.
+rem  and then runs Inno Setup. Inno Setup is installed for you if it
+rem  is not already on this machine.
 rem ------------------------------------------------------------------
 
 setlocal

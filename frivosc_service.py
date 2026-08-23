@@ -591,6 +591,11 @@ class Bridge:
         self._reported_mute = "unset"
         self._last_heartbeat = 0.0
         self._last_status_write = 0.0
+        # What the window shows instead of asking someone to read a log:
+        # how many chatbox messages have come through, and when the last
+        # one did. Wall clock, because a different process reads it.
+        self._chatbox_total = 0
+        self._chatbox_last = 0.0
 
     def stop(self):
         self._stop.set()
@@ -622,6 +627,8 @@ class Bridge:
             vrchat_send_port=self.sender.port,
             vrchat_packets=packets,
             muted=muted,
+            chatbox_total=self._chatbox_total,
+            chatbox_last=self._chatbox_last,
         )
 
     def _push_state(self):
@@ -666,6 +673,12 @@ class Bridge:
             # Acknowledged once queued, not once delivered. OSC is UDP with
             # no receipt, so "delivered" is not a thing anyone can observe —
             # and leaving it unacknowledged would have Frivo send it again.
+            self._chatbox_total += 1
+            self._chatbox_last = time.time()
+            # Published straight away rather than on the next tick: the
+            # window's "receiving" light is the whole point of counting.
+            self._publish_status()
+
             try:
                 if message.get("id"):
                     self.client.acknowledge(message["id"], pages)

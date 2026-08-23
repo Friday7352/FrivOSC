@@ -109,6 +109,7 @@ function Read-FrivOSCStatus {
     $result = [pscustomobject]@{
         Present = $false; Fresh = $false; Connected = $false; Detail = ''
         FrivoUrl = ''; ListenPort = 0; VrchatPackets = 0; Muted = $null
+        ChatboxTotal = 0; ChatboxAge = $null
     }
     try {
         if (-not (Test-Path -LiteralPath $StatusPath -PathType Leaf)) { return $result }
@@ -121,6 +122,10 @@ function Read-FrivOSCStatus {
         if ($names -contains 'listen_port') { $result.ListenPort = [int]$saved.listen_port }
         if ($names -contains 'vrchat_packets') { $result.VrchatPackets = [int]$saved.vrchat_packets }
         if ($names -contains 'muted') { $result.Muted = $saved.muted }
+        if ($names -contains 'chatbox_total') { $result.ChatboxTotal = [int]$saved.chatbox_total }
+        if ($names -contains 'chatbox_last' -and [double]$saved.chatbox_last -gt 0) {
+            $result.ChatboxAge = ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() / 1000.0) - [double]$saved.chatbox_last
+        }
         if ($names -contains 'updated_at') {
             # Unix seconds from Python, compared against this machine's clock.
             $age = ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() / 1000.0) - [double]$saved.updated_at
@@ -163,20 +168,114 @@ $Theme = Get-FrivoTheme
 $config = Read-FrivOSCConfig
 
 # ==================================================================
-# Window
+# Drawn icons
 # ------------------------------------------------------------------
-# Laid out to match Frivo's launcher: header with a status dot, then
-# one card per fact, then the activity log, then the actions. Every
-# label is given more height than its font strictly needs — Windows
-# PowerShell's GDI text renderer clips descenders otherwise, which is
-# what cut the tails off "FrivOSC is running".
+# Drawn rather than shipped as images: two glyphs at one size, needed
+# in three tints each, is more work as twelve PNGs than as thirty
+# lines of GDI+. They also stay crisp at any DPI this way.
 # ==================================================================
 
-$form = New-FrivoForm -Theme $Theme -Title 'FrivOSC' -Width 470 -Height 690 -IconPath (Join-Path $Root 'FrivOSCIcon.ico')
+function Draw-FrivoMicIcon {
+    param(
+        $Graphics,
+        [System.Drawing.Rectangle] $Box,
+        [System.Drawing.Color] $Color,
+        [bool] $Muted,
+        # Whatever is behind the glyph. The muted slash is drawn twice —
+        # once in this colour and slightly thicker — so it reads as passing
+        # over the microphone rather than as another part of it.
+        [System.Drawing.Color] $Background
+    )
+
+    $pen = New-Object System.Drawing.Pen($Color, 2.0)
+    $pen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $pen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $brush = New-Object System.Drawing.SolidBrush($Color)
+    try {
+        $cx = $Box.X + [int]($Box.Width / 2)
+        $top = $Box.Y + 2
+
+        # Capsule body.
+        $Graphics.FillRectangle($brush, ($cx - 5), ($top + 5), 10, 8)
+        $Graphics.FillEllipse($brush, ($cx - 5), $top, 10, 10)
+        $Graphics.FillEllipse($brush, ($cx - 5), ($top + 8), 10, 10)
+
+        # Cradle, stem, base.
+        $Graphics.DrawArc($pen, ($cx - 9), ($top + 6), 18, 16, 0, 180)
+        $Graphics.DrawLine($pen, $cx, ($top + 22), $cx, ($top + 27))
+        $Graphics.DrawLine($pen, ($cx - 6), ($top + 27), ($cx + 6), ($top + 27))
+
+        if ($Muted) {
+            $shadow = New-Object System.Drawing.Pen($Background, 4.5)
+            try { $Graphics.DrawLine($shadow, ($cx - 11), ($top - 3), ($cx + 11), ($top + 26)) }
+            finally { $shadow.Dispose() }
+            $Graphics.DrawLine($pen, ($cx - 10), ($top - 2), ($cx + 10), ($top + 25))
+        }
+    } finally {
+        $pen.Dispose(); $brush.Dispose()
+    }
+}
+
+function Draw-FrivoChatIcon {
+    param($Graphics, [System.Drawing.Rectangle] $Box, [System.Drawing.Color] $Color, [bool] $Active)
+
+    $pen = New-Object System.Drawing.Pen($Color, 2.0)
+    $pen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $pen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $brush = New-Object System.Drawing.SolidBrush($Color)
+    try {
+        $x = $Box.X + 2
+        $y = $Box.Y + 3
+        $w = $Box.Width - 4
+        $h = 20
+
+        $path = New-Object System.Drawing.Drawing2D.GraphicsPath
+        try {
+            $r = 7
+            $path.AddArc($x, $y, $r * 2, $r * 2, 180, 90)
+            $path.AddArc(($x + $w - $r * 2), $y, $r * 2, $r * 2, 270, 90)
+            $path.AddArc(($x + $w - $r * 2), ($y + $h - $r * 2), $r * 2, $r * 2, 0, 90)
+            $path.AddArc($x, ($y + $h - $r * 2), $r * 2, $r * 2, 90, 90)
+            $path.CloseFigure()
+            $Graphics.DrawPath($pen, $path)
+        } finally { $path.Dispose() }
+
+        # Tail.
+        $tail = @(
+            [System.Drawing.Point]::new(($x + 7), ($y + $h - 1)),
+            [System.Drawing.Point]::new(($x + 7), ($y + $h + 6)),
+            [System.Drawing.Point]::new(($x + 15), ($y + $h - 1))
+        )
+        $Graphics.FillPolygon($brush, $tail)
+
+        # Three dots when text is flowing, one flat line when it is not.
+        if ($Active) {
+            $dotY = $y + [int]($h / 2) - 2
+            foreach ($offset in @(-6, 0, 6)) {
+                $Graphics.FillEllipse($brush, ($x + [int]($w / 2) + $offset - 2), $dotY, 4, 4)
+            }
+        } else {
+            $midY = $y + [int]($h / 2)
+            $Graphics.DrawLine($pen, ($x + 7), $midY, ($x + $w - 7), $midY)
+        }
+    } finally {
+        $pen.Dispose(); $brush.Dispose()
+    }
+}
+
+# ==================================================================
+# Window
+# ------------------------------------------------------------------
+# Laid out to match Frivo's launcher: header with a status dot, the
+# connection stated in words, then the two things anybody actually
+# opens this window to check — is VRChat's mic muted, and is text
+# arriving from Frivo — as icons rather than as a log to read. The
+# log is still here, one click away, for when something is wrong.
+# ==================================================================
+
+$form = New-FrivoForm -Theme $Theme -Title 'FrivOSC' -Width 470 -Height 620 -IconPath (Join-Path $Root 'FrivOSCIcon.ico')
 $header = New-FrivoHeader -Theme $Theme -Form $form -Title 'FrivOSC' -Subtitle '' -LogoPngPath (Join-Path $Root 'FrivOSC.png')
 
-# The running indicator sits where Frivo's does, so the two windows read
-# the same way at a glance.
 $statusDot = New-Object System.Windows.Forms.Panel
 $statusDot.Location = [Drawing.Point]::new(82, 56)
 $statusDot.Size = [Drawing.Size]::new(9, 9)
@@ -191,47 +290,111 @@ $statusLabel.Text = 'Checking...'
 
 $body = New-Object System.Windows.Forms.Panel
 $body.Location = [Drawing.Point]::new(0, 84)
-$body.Size = [Drawing.Size]::new(470, 606)
+$body.Size = [Drawing.Size]::new(470, 536)
 $body.BackColor = $Theme.Bg
 $form.Controls.Add($body)
 
-function New-FrivOSCStatusCard {
+# ---------- connection ----------
+$frivoCard = New-FrivoCard -Theme $Theme -Parent $body -X 24 -Y 10 -W 422 -H 84
+[void](New-FrivoLabel -Theme $Theme -Parent $frivoCard -Text 'CONNECTION TO FRIVO' -X 18 -Y 14 -W 380 -H 14 -Font $Theme.FontCaps -Color $Theme.Faint)
+$frivoValue = New-FrivoLabel -Theme $Theme -Parent $frivoCard -Text '' -X 18 -Y 33 -W 386 -H 26 -Font $Theme.FontMid -Color $Theme.Ink
+$frivoValue.AutoEllipsis = $true
+$frivoDetail = New-FrivoLabel -Theme $Theme -Parent $frivoCard -Text '' -X 18 -Y 60 -W 386 -H 20 -Font $Theme.FontSmall -Color $Theme.Dim
+$frivoDetail.AutoEllipsis = $true
+
+# ---------- the two live indicators ----------
+function New-FrivOSCIndicator {
     <#
-        Caption, a headline in the accent-neutral heading font, and a
-        quieter line underneath for the detail. Same three-part shape as
-        Frivo's address cards.
+        Icon above, name under it, state under that. Two of these side by
+        side replace the log that used to fill this window: the answer to
+        "is it working" should be a glyph you can read at a glance from
+        across the room, not eight timestamped lines.
     #>
-    param([int] $Y, [string] $Caption)
-    $card = New-FrivoCard -Theme $Theme -Parent $body -X 24 -Y $Y -W 422 -H 84
-    [void](New-FrivoLabel -Theme $Theme -Parent $card -Text $Caption -X 18 -Y 14 -W 380 -H 14 -Font $Theme.FontCaps -Color $Theme.Faint)
-    $value = New-FrivoLabel -Theme $Theme -Parent $card -Text '' -X 18 -Y 33 -W 386 -H 26 -Font $Theme.FontMid -Color $Theme.Ink
-    $value.AutoEllipsis = $true
-    $detail = New-FrivoLabel -Theme $Theme -Parent $card -Text '' -X 18 -Y 60 -W 386 -H 20 -Font $Theme.FontSmall -Color $Theme.Dim
-    $detail.AutoEllipsis = $true
-    return [pscustomobject]@{ Card = $card; Value = $value; Detail = $detail }
+    param([int] $X, [string] $Caption)
+
+    $card = New-FrivoCard -Theme $Theme -Parent $body -X $X -Y 104 -W 205 -H 126
+    $icon = New-Object System.Windows.Forms.Panel
+    $icon.Location = [Drawing.Point]::new(([int](205 / 2) - 20), 16)
+    $icon.Size = [Drawing.Size]::new(40, 38)
+    $icon.BackColor = $Theme.Surface
+    $card.Controls.Add($icon)
+
+    $name = New-FrivoLabel -Theme $Theme -Parent $card -Text $Caption -X 10 -Y 62 -W 185 -H 18 -Font $Theme.FontSmall -Color $Theme.Dim
+    $name.TextAlign = 'MiddleCenter'
+    $state = New-FrivoLabel -Theme $Theme -Parent $card -Text '' -X 10 -Y 82 -W 185 -H 26 -Font $Theme.FontMid -Color $Theme.Ink
+    $state.TextAlign = 'MiddleCenter'
+    $state.AutoEllipsis = $true
+
+    return [pscustomobject]@{ Card = $card; Icon = $icon; State = $state }
 }
 
-$frivoCard = New-FrivOSCStatusCard -Y 10 -Caption 'CONNECTION TO FRIVO'
-$vrchatCard = New-FrivOSCStatusCard -Y 104 -Caption 'VRCHAT'
+$micTile = New-FrivOSCIndicator -X 24 -Caption 'MICROPHONE'
+$chatTile = New-FrivOSCIndicator -X 241 -Caption 'CHATBOX'
 
-$serverCard = New-FrivoCard -Theme $Theme -Parent $body -X 24 -Y 198 -W 422 -H 88
+# Repainted by invalidating the panel rather than by swapping images, so
+# there is nothing to dispose and nothing to hold a file open.
+$script:MicColor = $Theme.Faint
+$script:MicMuted = $false
+$script:ChatColor = $Theme.Faint
+$script:ChatActive = $false
+
+$micTile.Icon.Add_Paint({
+    param($sender, $eventArgs)
+    $eventArgs.Graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    Draw-FrivoMicIcon -Graphics $eventArgs.Graphics `
+        -Box ([System.Drawing.Rectangle]::new(0, 0, $sender.Width, $sender.Height)) `
+        -Color $script:MicColor -Muted $script:MicMuted -Background $sender.BackColor
+})
+$chatTile.Icon.Add_Paint({
+    param($sender, $eventArgs)
+    $eventArgs.Graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    Draw-FrivoChatIcon -Graphics $eventArgs.Graphics `
+        -Box ([System.Drawing.Rectangle]::new(0, 0, $sender.Width, $sender.Height)) `
+        -Color $script:ChatColor -Active $script:ChatActive
+})
+
+# ---------- address ----------
+$serverCard = New-FrivoCard -Theme $Theme -Parent $body -X 24 -Y 242 -W 422 -H 88
 [void](New-FrivoLabel -Theme $Theme -Parent $serverCard -Text 'FRIVO ADDRESS' -X 18 -Y 14 -W 380 -H 14 -Font $Theme.FontCaps -Color $Theme.Faint)
 $urlBox = New-FrivoTextBox -Theme $Theme -Parent $serverCard -X 18 -Y 36 -W 292 -H 34
 $urlBox.Text = [string]$config['frivo_url']
 $saveButton = New-FrivoButton -Theme $Theme -Parent $serverCard -Text 'Save' -X 322 -Y 36 -W 82 -H 34
 $saveButton.Font = $Theme.FontUI
 
-[void](New-FrivoLabel -Theme $Theme -Parent $body -Text 'RECENT ACTIVITY' -X 28 -Y 302 -W 400 -H 14 -Font $Theme.FontCaps -Color $Theme.Faint)
-$logBox = New-FrivoTextBox -Theme $Theme -Parent $body -X 24 -Y 320 -W 422 -H 146 -Multiline
+# ---------- activity, collapsed ----------
+$activityButton = New-FrivoButton -Theme $Theme -Parent $body -Text 'Show activity' -X 24 -Y 342 -W 422 -H 32
+$activityButton.Font = $Theme.FontUI
+$logBox = New-FrivoTextBox -Theme $Theme -Parent $body -X 24 -Y 384 -W 422 -H 140 -Multiline
 $logBox.ReadOnly = $true
 $logBox.Font = $Theme.FontSmall
+$logFrame = $logBox.Parent
+$logFrame.Visible = $false
 
-$powerButton = New-FrivoButton -Theme $Theme -Parent $body -Text 'Start FrivOSC' -X 24 -Y 482 -W 422 -H 46 -Primary $true
-$logButton = New-FrivoButton -Theme $Theme -Parent $body -Text 'Open log folder' -X 24 -Y 540 -W 205 -H 38
-$closeButton = New-FrivoButton -Theme $Theme -Parent $body -Text 'Close' -X 241 -Y 540 -W 205 -H 38
-
-$hintLabel = New-FrivoLabel -Theme $Theme -Parent $body -Text '' -X 28 -Y 586 -W 414 -H 20 -Font $Theme.FontSmall -Color $Theme.Faint
+$powerButton = New-FrivoButton -Theme $Theme -Parent $body -Text 'Start FrivOSC' -X 24 -Y 386 -W 422 -H 46 -Primary $true
+$logButton = New-FrivoButton -Theme $Theme -Parent $body -Text 'Open log folder' -X 24 -Y 444 -W 205 -H 38
+$closeButton = New-FrivoButton -Theme $Theme -Parent $body -Text 'Close' -X 241 -Y 444 -W 205 -H 38
+$hintLabel = New-FrivoLabel -Theme $Theme -Parent $body -Text '' -X 28 -Y 490 -W 414 -H 20 -Font $Theme.FontSmall -Color $Theme.Faint
 $hintLabel.TextAlign = 'MiddleCenter'
+
+$script:ActivityOpen = $false
+
+function Set-FrivOSCActivityOpen([bool] $Open) {
+    <#
+        The window grows rather than scrolls. Everything below the log just
+        moves down by its height, which keeps one set of coordinates in the
+        layout above instead of two.
+    #>
+    $script:ActivityOpen = $Open
+    $shift = if ($Open) { 156 } else { 0 }
+    $logFrame.Visible = $Open
+    $activityButton.Text = if ($Open) { 'Hide activity' } else { 'Show activity' }
+    $powerButton.Location = [Drawing.Point]::new(24, (386 + $shift))
+    $logButton.Location = [Drawing.Point]::new(24, (444 + $shift))
+    $closeButton.Location = [Drawing.Point]::new(241, (444 + $shift))
+    $hintLabel.Location = [Drawing.Point]::new(28, (490 + $shift))
+    $body.Size = [Drawing.Size]::new(470, (536 + $shift))
+    $form.ClientSize = [Drawing.Size]::new(470, (620 + $shift))
+}
 
 # ==================================================================
 # Status
@@ -248,67 +411,89 @@ function Update-FrivOSCStatus {
 
     if ($running) {
         $statusDot.BackColor = $Theme.Signal
-        $statusLabel.ForeColor = $Theme.Dim
         $statusLabel.Text = 'Running'
     } else {
         $statusDot.BackColor = $Theme.Faint
-        $statusLabel.ForeColor = $Theme.Dim
         $statusLabel.Text = 'Not running'
     }
+    $statusLabel.ForeColor = $Theme.Dim
     $powerButton.Text = if ($running) { 'Stop FrivOSC' } else { 'Start FrivOSC' }
 
+    # ---- connection ----
     $url = [string]$current['frivo_url']
     if ($status.FrivoUrl) { $url = $status.FrivoUrl }
 
     if ($reporting -and $status.Connected) {
-        $frivoCard.Value.ForeColor = $Theme.Signal
-        $frivoCard.Value.Text = 'Connected'
-        $frivoCard.Detail.Text = $url
+        $frivoValue.ForeColor = $Theme.Signal
+        $frivoValue.Text = 'Connected'
+        $frivoDetail.Text = $url
     } elseif ($reporting) {
-        $frivoCard.Value.ForeColor = $Theme.Warn
-        $frivoCard.Value.Text = 'Not connected'
-        $frivoCard.Detail.Text = if ($status.Detail) { $status.Detail } else { ('No answer from {0}' -f $url) }
+        $frivoValue.ForeColor = $Theme.Warn
+        $frivoValue.Text = 'Not connected'
+        $frivoDetail.Text = if ($status.Detail) { $status.Detail } else { ('No answer from {0}' -f $url) }
     } elseif ($running) {
         # Started, but has not published a status yet. This lasts a second
         # or two; guessing during it is how the old window ended up saying
         # the opposite of what the log said.
-        $frivoCard.Value.ForeColor = $Theme.Dim
-        $frivoCard.Value.Text = 'Checking...'
-        $frivoCard.Detail.Text = $url
+        $frivoValue.ForeColor = $Theme.Dim
+        $frivoValue.Text = 'Checking...'
+        $frivoDetail.Text = $url
     } elseif ([string]::IsNullOrWhiteSpace($url)) {
-        $frivoCard.Value.ForeColor = $Theme.Warn
-        $frivoCard.Value.Text = 'No address set'
-        $frivoCard.Detail.Text = 'Enter the address you open Frivo at, then Save.'
+        $frivoValue.ForeColor = $Theme.Warn
+        $frivoValue.Text = 'No address set'
+        $frivoDetail.Text = 'Enter the address you open Frivo at, then Save.'
     } else {
-        # Not running, so nothing is reporting — check the address here so
-        # it can be corrected before starting anything.
+        # Nothing is running, so nothing is reporting — check the address
+        # here so it can be corrected before starting anything.
         $reach = Test-FrivoReachable $url
-        $frivoCard.Value.ForeColor = if ($reach.Ok) { $Theme.Dim } else { $Theme.Warn }
-        $frivoCard.Value.Text = if ($reach.Ok) { 'Frivo is up' } else { 'No answer' }
-        $frivoCard.Detail.Text = $reach.Message
+        $frivoValue.ForeColor = if ($reach.Ok) { $Theme.Dim } else { $Theme.Warn }
+        $frivoValue.Text = if ($reach.Ok) { 'Frivo is up' } else { 'No answer' }
+        $frivoDetail.Text = $reach.Message
     }
 
-    $listenPort = [int]$current['listen_port']
-    if ($status.ListenPort -gt 0) { $listenPort = $status.ListenPort }
-    if ($reporting -and $status.VrchatPackets -gt 0) {
-        $vrchatCard.Value.ForeColor = $Theme.Signal
-        $vrchatCard.Value.Text = 'Receiving'
-        if ($status.Muted -eq $true) {
-            $vrchatCard.Detail.Text = 'Your microphone is muted in VRChat'
-        } elseif ($status.Muted -eq $false) {
-            $vrchatCard.Detail.Text = 'Your microphone is live in VRChat'
+    # ---- microphone ----
+    # Unknown is its own state, not a guess at unmuted: VRChat only sends
+    # MuteSelf when it changes, so before the first one there is genuinely
+    # nothing to report.
+    if ($reporting -and $status.VrchatPackets -gt 0 -and $null -ne $status.Muted) {
+        if ($status.Muted) {
+            $script:MicColor = $Theme.Warn; $script:MicMuted = $true
+            $micTile.State.ForeColor = $Theme.Warn
+            $micTile.State.Text = 'Muted'
         } else {
-            $vrchatCard.Detail.Text = ('Listening on 127.0.0.1:{0}' -f $listenPort)
+            $script:MicColor = $Theme.Signal; $script:MicMuted = $false
+            $micTile.State.ForeColor = $Theme.Signal
+            $micTile.State.Text = 'Live'
         }
-    } elseif ($reporting) {
-        $vrchatCard.Value.ForeColor = $Theme.Dim
-        $vrchatCard.Value.Text = 'Waiting'
-        $vrchatCard.Detail.Text = ('Nothing heard yet on 127.0.0.1:{0}' -f $listenPort)
     } else {
-        $vrchatCard.Value.ForeColor = $Theme.Dim
-        $vrchatCard.Value.Text = 'Not listening'
-        $vrchatCard.Detail.Text = ('Starts on 127.0.0.1:{0}' -f $listenPort)
+        $script:MicColor = $Theme.Faint; $script:MicMuted = $false
+        $micTile.State.ForeColor = $Theme.Dim
+        $micTile.State.Text = if ($reporting) { 'Waiting' } else { 'Unknown' }
     }
+    $micTile.Icon.Invalidate()
+
+    # ---- chatbox ----
+    # "Receiving" is a recent arrival, not a lifetime total: the question
+    # this answers is whether text is flowing right now.
+    $recent = ($null -ne $status.ChatboxAge -and $status.ChatboxAge -lt 20)
+    if ($reporting -and $recent) {
+        $script:ChatColor = $Theme.Signal; $script:ChatActive = $true
+        $chatTile.State.ForeColor = $Theme.Signal
+        $chatTile.State.Text = 'Receiving'
+    } elseif ($reporting -and $status.ChatboxTotal -gt 0) {
+        $script:ChatColor = $Theme.Dim; $script:ChatActive = $false
+        $chatTile.State.ForeColor = $Theme.Dim
+        $chatTile.State.Text = ('{0} sent' -f $status.ChatboxTotal)
+    } elseif ($reporting) {
+        $script:ChatColor = $Theme.Faint; $script:ChatActive = $false
+        $chatTile.State.ForeColor = $Theme.Dim
+        $chatTile.State.Text = 'Idle'
+    } else {
+        $script:ChatColor = $Theme.Faint; $script:ChatActive = $false
+        $chatTile.State.ForeColor = $Theme.Dim
+        $chatTile.State.Text = 'Off'
+    }
+    $chatTile.Icon.Invalidate()
 
     if ($running) {
         $hintLabel.Text = 'Closing this window leaves FrivOSC running.'
@@ -316,9 +501,11 @@ function Update-FrivOSCStatus {
         $hintLabel.Text = 'Stopped. Nothing is being sent to VRChat.'
     }
 
-    $logBox.Text = ((Get-FrivOSCLogTail 10) -join "`r`n")
-    $logBox.SelectionStart = $logBox.TextLength
-    $logBox.ScrollToCaret()
+    if ($script:ActivityOpen) {
+        $logBox.Text = ((Get-FrivOSCLogTail 10) -join "`r`n")
+        $logBox.SelectionStart = $logBox.TextLength
+        $logBox.ScrollToCaret()
+    }
 }
 
 function Wait-FrivOSCSettle([int] $Milliseconds) {
@@ -330,6 +517,11 @@ function Wait-FrivOSCSettle([int] $Milliseconds) {
         Start-Sleep -Milliseconds 60
     }
 }
+
+$activityButton.Add_Click({
+    Set-FrivOSCActivityOpen (-not $script:ActivityOpen)
+    Update-FrivOSCStatus
+})
 
 $saveButton.Add_Click({
     $script:Busy = $true
@@ -344,9 +536,9 @@ $saveButton.Add_Click({
                 Wait-FrivOSCSettle 1500
             }
         } else {
-            $frivoCard.Value.ForeColor = $Theme.Warn
-            $frivoCard.Value.Text = 'Could not save'
-            $frivoCard.Detail.Text = 'Try opening FrivOSC as administrator.'
+            $frivoValue.ForeColor = $Theme.Warn
+            $frivoValue.Text = 'Could not save'
+            $frivoDetail.Text = 'Try opening FrivOSC as administrator.'
             return
         }
     } finally { $script:Busy = $false }
@@ -385,7 +577,7 @@ $closeButton.Add_Click({ $form.Close() })
 $refresh = New-Object System.Windows.Forms.Timer
 $refresh.Interval = 1500
 $refresh.Add_Tick({ Update-FrivOSCStatus })
-$form.Add_Shown({ Update-FrivOSCStatus; $refresh.Start() })
+$form.Add_Shown({ Set-FrivOSCActivityOpen $false; Update-FrivOSCStatus; $refresh.Start() })
 $form.Add_FormClosing({ $refresh.Stop() })
 
 [void] $form.ShowDialog()

@@ -173,6 +173,12 @@ if os.path.exists(status_path):
           published.get("vrchat_packets", 0) > 0, str(published))
     check("it carries a timestamp the launcher can age out",
           abs(published.get("updated_at", 0) - time.time()) < 60, str(published))
+    # The window shows a "receiving from Frivo" light rather than a log,
+    # so the count behind it has to be real.
+    check("it counts the chatbox messages relayed",
+          published.get("chatbox_total", 0) >= 2, str(published))
+    check("and timestamps the last one",
+          abs(published.get("chatbox_last", 0) - time.time()) < 60, str(published))
 
 proc.terminate()
 try: out, _ = proc.communicate(timeout=5)

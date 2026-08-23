@@ -60,7 +60,8 @@ def build_probe(directory):
             "[pscustomobject]@{ Present = $s.Present; Fresh = $s.Fresh;\n"
             "  Connected = $s.Connected; Detail = $s.Detail; FrivoUrl = $s.FrivoUrl;\n"
             "  ListenPort = $s.ListenPort; VrchatPackets = $s.VrchatPackets;\n"
-            "  Muted = $s.Muted } | ConvertTo-Json -Compress\n"
+            "  Muted = $s.Muted; ChatboxTotal = $s.ChatboxTotal;\n"
+            "  ChatboxAge = $s.ChatboxAge } | ConvertTo-Json -Compress\n"
         )
     return probe
 
@@ -102,7 +103,8 @@ def main():
 
     service.write_status(running=True, frivo_url="https://192.168.1.248:5000",
                          connected=True, detail="", listen_port=9001,
-                         vrchat_send_port=9000, vrchat_packets=7, muted=True)
+                         vrchat_send_port=9000, vrchat_packets=7, muted=True,
+                         chatbox_total=3, chatbox_last=time.time())
     state = read_back()
     check("a fresh report reads as connected", state["Fresh"] and state["Connected"], state)
     check("the address survives the round trip",
@@ -111,6 +113,28 @@ def main():
     check("the VRChat packet count survives the round trip",
           state["VrchatPackets"] == 7, state)
     check("mute state arrives as a real boolean", state["Muted"] is True, state)
+    # The window's chatbox light is "did something arrive recently", which
+    # needs an age rather than a raw timestamp.
+    check("the chatbox count survives the round trip",
+          state["ChatboxTotal"] == 3, state)
+    check("a just-sent message reads as recent",
+          state["ChatboxAge"] is not None and state["ChatboxAge"] < 20, state)
+
+    service.write_status(running=True, frivo_url="https://x:5000", connected=True,
+                         detail="", listen_port=9001, vrchat_send_port=9000,
+                         vrchat_packets=7, muted=False,
+                         chatbox_total=9, chatbox_last=time.time() - 600)
+    state = read_back()
+    check("an old message does not read as recent",
+          state["ChatboxAge"] is not None and state["ChatboxAge"] > 500, state)
+
+    service.write_status(running=True, frivo_url="https://x:5000", connected=True,
+                         detail="", listen_port=9001, vrchat_send_port=9000,
+                         vrchat_packets=0, muted=None,
+                         chatbox_total=0, chatbox_last=0.0)
+    state = read_back()
+    check("nothing sent yet means no age at all, not an age of 1970",
+          state["ChatboxAge"] is None, state)
 
     service.write_status(running=True, frivo_url="https://x:5000", connected=False,
                          detail="timed out", listen_port=9001, vrchat_send_port=9000,

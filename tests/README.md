@@ -61,11 +61,44 @@ It runs the service under an interpreter with no Flask on the path —
 `FRIVOSC_TEST_PYTHON` overrides which. That is deliberate: this code has to
 run on the VRChat PC, where nothing has been installed.
 
+## test-inno-discovery.ps1
+
+    pwsh -NoProfile -File tests/test-inno-discovery.ps1
+
+The build script installs Inno Setup itself when it is missing — winget
+first, then the current release straight from jrsoftware.org's GitHub. The
+discovery half of that is pure logic, so it is tested: an existing install
+must be found (machine-wide, per-user, version 6 or 7, or via the registry)
+and must never be installed over, and when both install routes fail the
+error has to say where to get it by hand and that a new window is needed.
+
+The functions are extracted from the build script at run time rather than
+copied, so this fails if the real ones change shape. It caught a real bug
+immediately: `Join-Path` throws on an empty base, and the candidate paths
+were being built inside an array literal — evaluated before the guard that
+was supposed to skip them. Same shape as the `Find-InstalledPython` bug in
+FrivOSC.
+
+## preview-icons.py
+
+    python3 tests/preview-icons.py
+
+Not a test — nothing here asserts anything. The launcher draws its
+microphone and chatbox glyphs with GDI+ at run time rather than shipping
+images, so the only way to see them is normally to install FrivOSC on
+Windows. This redraws the same coordinates with Pillow and writes
+`tests/icons.png`, which makes iterating on them possible from anywhere.
+
+It is a hand port and can drift. Change the geometry in the launcher and
+you have to change it here too, or it stops telling you the truth.
+
 ## Not covered
 
 The WinForms wizard and launcher are not exercised. They need a stubbed
 `System.Windows.Forms` to run off Windows, which is a larger harness than
-this repo currently justifies. They are parse-checked instead:
+this repo currently justifies — and `System.Drawing` has no Unix support at
+all on .NET 8, so even the icon drawing cannot be executed here, which is
+why `preview-icons.py` exists. They are parse-checked instead:
 
     pwsh -NoProfile -Command "Get-ChildItem *.ps1,*.psm1 -Recurse | ForEach-Object { \
       \$e=\$null; [System.Management.Automation.Language.Parser]::ParseFile(\$_.FullName,[ref]\$null,[ref]\$e) > \$null; \
