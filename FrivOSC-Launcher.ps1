@@ -154,7 +154,7 @@ function Test-FrivoReachable([string] $Url) {
         }
         return [pscustomobject]@{ Ok = $false; Message = ('Frivo answered with status {0}' -f $response.StatusCode) }
     } catch {
-        return [pscustomobject]@{ Ok = $false; Message = ('No answer from {0}. Start FrivOSC to keep trying.' -f $Url) }
+        return [pscustomobject]@{ Ok = $false; Message = ('No answer from {0}' -f $Url) }
     } finally {
         [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $callback
     }
@@ -273,7 +273,7 @@ function Draw-FrivoChatIcon {
 # log is still here, one click away, for when something is wrong.
 # ==================================================================
 
-$form = New-FrivoForm -Theme $Theme -Title 'FrivOSC' -Width 470 -Height 620 -IconPath (Join-Path $Root 'FrivOSCIcon.ico')
+$form = New-FrivoForm -Theme $Theme -Title 'FrivOSC' -Width 470 -Height 636 -IconPath (Join-Path $Root 'FrivOSCIcon.ico')
 $header = New-FrivoHeader -Theme $Theme -Form $form -Title 'FrivOSC' -Subtitle '' -LogoPngPath (Join-Path $Root 'FrivOSC.png')
 
 $statusDot = New-Object System.Windows.Forms.Panel
@@ -290,17 +290,20 @@ $statusLabel.Text = 'Checking...'
 
 $body = New-Object System.Windows.Forms.Panel
 $body.Location = [Drawing.Point]::new(0, 84)
-$body.Size = [Drawing.Size]::new(470, 536)
+$body.Size = [Drawing.Size]::new(470, 552)
 $body.BackColor = $Theme.Bg
 $form.Controls.Add($body)
 
 # ---------- connection ----------
-$frivoCard = New-FrivoCard -Theme $Theme -Parent $body -X 24 -Y 10 -W 422 -H 84
+$frivoCard = New-FrivoCard -Theme $Theme -Parent $body -X 24 -Y 10 -W 422 -H 100
 [void](New-FrivoLabel -Theme $Theme -Parent $frivoCard -Text 'CONNECTION TO FRIVO' -X 18 -Y 14 -W 380 -H 14 -Font $Theme.FontCaps -Color $Theme.Faint)
 $frivoValue = New-FrivoLabel -Theme $Theme -Parent $frivoCard -Text '' -X 18 -Y 33 -W 386 -H 26 -Font $Theme.FontMid -Color $Theme.Ink
 $frivoValue.AutoEllipsis = $true
-$frivoDetail = New-FrivoLabel -Theme $Theme -Parent $frivoCard -Text '' -X 18 -Y 60 -W 386 -H 20 -Font $Theme.FontSmall -Color $Theme.Dim
-$frivoDetail.AutoEllipsis = $true
+# Two lines and no ellipsis. These messages carry an address and a
+# sentence about what to do next, and both matter — "No answer from
+# https://192.168.1.248:5000. Start FrivOSC to keep..." told you the
+# problem and then hid the answer.
+$frivoDetail = New-FrivoLabel -Theme $Theme -Parent $frivoCard -Text '' -X 18 -Y 58 -W 386 -H 36 -Font $Theme.FontSmall -Color $Theme.Dim
 
 # ---------- the two live indicators ----------
 function New-FrivOSCIndicator {
@@ -312,7 +315,7 @@ function New-FrivOSCIndicator {
     #>
     param([int] $X, [string] $Caption)
 
-    $card = New-FrivoCard -Theme $Theme -Parent $body -X $X -Y 104 -W 205 -H 126
+    $card = New-FrivoCard -Theme $Theme -Parent $body -X $X -Y 120 -W 205 -H 126
     $icon = New-Object System.Windows.Forms.Panel
     $icon.Location = [Drawing.Point]::new(([int](205 / 2) - 20), 16)
     $icon.Size = [Drawing.Size]::new(40, 38)
@@ -354,7 +357,7 @@ $chatTile.Icon.Add_Paint({
 })
 
 # ---------- address ----------
-$serverCard = New-FrivoCard -Theme $Theme -Parent $body -X 24 -Y 242 -W 422 -H 88
+$serverCard = New-FrivoCard -Theme $Theme -Parent $body -X 24 -Y 258 -W 422 -H 88
 [void](New-FrivoLabel -Theme $Theme -Parent $serverCard -Text 'FRIVO ADDRESS' -X 18 -Y 14 -W 380 -H 14 -Font $Theme.FontCaps -Color $Theme.Faint)
 $urlBox = New-FrivoTextBox -Theme $Theme -Parent $serverCard -X 18 -Y 36 -W 292 -H 34
 $urlBox.Text = [string]$config['frivo_url']
@@ -362,18 +365,18 @@ $saveButton = New-FrivoButton -Theme $Theme -Parent $serverCard -Text 'Save' -X 
 $saveButton.Font = $Theme.FontUI
 
 # ---------- activity, collapsed ----------
-$activityButton = New-FrivoButton -Theme $Theme -Parent $body -Text 'Show activity' -X 24 -Y 342 -W 422 -H 32
+$activityButton = New-FrivoButton -Theme $Theme -Parent $body -Text 'Show activity' -X 24 -Y 358 -W 422 -H 32
 $activityButton.Font = $Theme.FontUI
-$logBox = New-FrivoTextBox -Theme $Theme -Parent $body -X 24 -Y 384 -W 422 -H 140 -Multiline
+$logBox = New-FrivoTextBox -Theme $Theme -Parent $body -X 24 -Y 400 -W 422 -H 140 -Multiline
 $logBox.ReadOnly = $true
 $logBox.Font = $Theme.FontSmall
 $logFrame = $logBox.Parent
 $logFrame.Visible = $false
 
-$powerButton = New-FrivoButton -Theme $Theme -Parent $body -Text 'Start FrivOSC' -X 24 -Y 386 -W 422 -H 46 -Primary $true
-$logButton = New-FrivoButton -Theme $Theme -Parent $body -Text 'Open log folder' -X 24 -Y 444 -W 205 -H 38
-$closeButton = New-FrivoButton -Theme $Theme -Parent $body -Text 'Close' -X 241 -Y 444 -W 205 -H 38
-$hintLabel = New-FrivoLabel -Theme $Theme -Parent $body -Text '' -X 28 -Y 490 -W 414 -H 20 -Font $Theme.FontSmall -Color $Theme.Faint
+$powerButton = New-FrivoButton -Theme $Theme -Parent $body -Text 'Start FrivOSC' -X 24 -Y 402 -W 422 -H 46 -Primary $true
+$logButton = New-FrivoButton -Theme $Theme -Parent $body -Text 'Open log folder' -X 24 -Y 460 -W 205 -H 38
+$closeButton = New-FrivoButton -Theme $Theme -Parent $body -Text 'Close' -X 241 -Y 460 -W 205 -H 38
+$hintLabel = New-FrivoLabel -Theme $Theme -Parent $body -Text '' -X 28 -Y 506 -W 414 -H 20 -Font $Theme.FontSmall -Color $Theme.Faint
 $hintLabel.TextAlign = 'MiddleCenter'
 
 $script:ActivityOpen = $false
@@ -388,12 +391,12 @@ function Set-FrivOSCActivityOpen([bool] $Open) {
     $shift = if ($Open) { 156 } else { 0 }
     $logFrame.Visible = $Open
     $activityButton.Text = if ($Open) { 'Hide activity' } else { 'Show activity' }
-    $powerButton.Location = [Drawing.Point]::new(24, (386 + $shift))
-    $logButton.Location = [Drawing.Point]::new(24, (444 + $shift))
-    $closeButton.Location = [Drawing.Point]::new(241, (444 + $shift))
-    $hintLabel.Location = [Drawing.Point]::new(28, (490 + $shift))
-    $body.Size = [Drawing.Size]::new(470, (536 + $shift))
-    $form.ClientSize = [Drawing.Size]::new(470, (620 + $shift))
+    $powerButton.Location = [Drawing.Point]::new(24, (402 + $shift))
+    $logButton.Location = [Drawing.Point]::new(24, (460 + $shift))
+    $closeButton.Location = [Drawing.Point]::new(241, (460 + $shift))
+    $hintLabel.Location = [Drawing.Point]::new(28, (506 + $shift))
+    $body.Size = [Drawing.Size]::new(470, (552 + $shift))
+    $form.ClientSize = [Drawing.Size]::new(470, (636 + $shift))
 }
 
 # ==================================================================
@@ -430,7 +433,7 @@ function Update-FrivOSCStatus {
     } elseif ($reporting) {
         $frivoValue.ForeColor = $Theme.Warn
         $frivoValue.Text = 'Not connected'
-        $frivoDetail.Text = if ($status.Detail) { $status.Detail } else { ('No answer from {0}' -f $url) }
+        $frivoDetail.Text = ('{0}{1}' -f $url, $(if ($status.Detail) { "  -  " + $status.Detail } else { '' }))
     } elseif ($running) {
         # Started, but has not published a status yet. This lasts a second
         # or two; guessing during it is how the old window ended up saying
