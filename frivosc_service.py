@@ -38,7 +38,7 @@ import urllib.error
 import urllib.request
 
 APP_NAME = "FrivOSC"
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 try:
     sys.stdout.reconfigure(line_buffering=True)

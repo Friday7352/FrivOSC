@@ -94,6 +94,28 @@ with a corrupt file falling back to the safe default rather than throwing.
 Extracted from `FrivOSC-Launcher.ps1` at run time, so it fails if the real
 functions change shape.
 
+## test-launcher-shape.ps1
+
+    pwsh -NoProfile -File tests/test-launcher-shape.ps1
+
+A weaker kind of test than the rest of this folder, and it says so up front:
+it reads the launcher rather than running it. WinForms cannot be exercised
+off Windows, and the behaviour it protects was already got wrong once —
+closing the window with "keep running in the background" chosen made
+everything vanish, because the window was the only thing on screen and
+nothing took its place.
+
+So the pieces that make a tray possible are pinned: `Application::Run`
+rather than `ShowDialog` (which ends the moment the form hides), a
+`NotifyIcon` that is shown, reopenable and disposed, a close that cancels
+and hides instead of exiting, the single-instance guard that stops a second
+window arguing with the first, and an error path that reaches a log and a
+message box rather than nowhere.
+
+It cannot prove the tray works. It can prove nobody quietly removed the
+parts that let it. Comments are stripped before matching, so a comment
+explaining why `ShowDialog` is *not* used does not read as using it.
+
 ## preview-icons.py
 
     python3 tests/preview-icons.py

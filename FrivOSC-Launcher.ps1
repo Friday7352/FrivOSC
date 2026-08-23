@@ -13,6 +13,31 @@ param()
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+# ==================================================================
+# One launcher at a time
+# ==================================================================
+# Now that closing the window leaves it sitting in the notification area,
+# clicking the shortcut again is a normal thing to do. A second copy would
+# mean a second tray icon and two windows disagreeing about the same
+# service, so it signals the first to show itself and leaves.
+
+$createdMutex = $false
+$instanceLock = New-Object System.Threading.Mutex($true, 'Local\FrivOSCLauncher', [ref] $createdMutex)
+$showSignal = New-Object System.Threading.EventWaitHandle($false,
+    [System.Threading.EventResetMode]::ManualReset, 'Local\FrivOSCLauncherShow')
+if (-not $createdMutex) {
+    [void] $showSignal.Set()
+    exit
+}
+
+$LauncherLog = Join-Path $env:TEMP 'FrivOSC-Launcher.log'
+
+# Everything below runs inside one try. This window is opened from a
+# shortcut, so an unhandled error has no console to land in — it would
+# simply fail to appear, which is exactly how the setup wizard once looked
+# broken for an afternoon.
+try {
+
 $Root = Split-Path -Parent $PSCommandPath
 $TaskName = 'FrivOSC'
 $DataDir = Join-Path $env:ProgramData 'FrivOSC'
@@ -323,6 +348,9 @@ function Draw-FrivoChatIcon {
 # ==================================================================
 
 $form = New-FrivoForm -Theme $Theme -Title 'FrivOSC' -Width 470 -Height 636 -IconPath (Join-Path $Root 'FrivOSCIcon.ico')
+# This window now outlives its own close button, so it should be
+# minimizable like any other window that sticks around.
+$form.MinimizeBox = $true
 $header = New-FrivoHeader -Theme $Theme -Form $form -Title 'FrivOSC' -Subtitle '' -LogoPngPath (Join-Path $Root 'FrivOSC.png')
 
 $statusDot = New-Object System.Windows.Forms.Panel
@@ -445,30 +473,77 @@ $backButton = New-FrivoButton -Theme $Theme -Parent $settingsView -Text ([string
 $backButton.Font = $Theme.FontUI
 
 [void](New-FrivoLabel -Theme $Theme -Parent $settingsView -Text 'WHEN I CLOSE THIS WINDOW' -X 30 -Y 54 -W 380 -H 14 -Font $Theme.FontCaps -Color $Theme.Faint)
-$closeCard = New-FrivoCard -Theme $Theme -Parent $settingsView -X 24 -Y 74 -W 422 -H 104
+$closeCard = New-FrivoCard -Theme $Theme -Parent $settingsView -X 24 -Y 74 -W 422 -H 112
 
 $keepRadio = New-FrivoRadio -Theme $Theme -Parent $closeCard -Text 'Keep FrivOSC running in the background' -X 18 -Y 14 -W 390
-[void](New-FrivoLabel -Theme $Theme -Parent $closeCard -Text 'VRChat keeps getting chatbox messages and mute updates.' -X 42 -Y 38 -W 360 -H 22 -Font $Theme.FontSmall -Color $Theme.Dim)
+[void](New-FrivoLabel -Theme $Theme -Parent $closeCard -Text 'Hides to the notification area and keeps relaying.' -X 42 -Y 38 -W 360 -H 20 -Font $Theme.FontSmall -Color $Theme.Dim)
 
-$stopRadio = New-FrivoRadio -Theme $Theme -Parent $closeCard -Text 'Stop FrivOSC' -X 18 -Y 62 -W 390
-[void](New-FrivoLabel -Theme $Theme -Parent $closeCard -Text 'Nothing reaches VRChat until you open this again.' -X 42 -Y 84 -W 360 -H 20 -Font $Theme.FontSmall -Color $Theme.Dim)
+$stopRadio = New-FrivoRadio -Theme $Theme -Parent $closeCard -Text 'Stop FrivOSC' -X 18 -Y 64 -W 390
+[void](New-FrivoLabel -Theme $Theme -Parent $closeCard -Text 'Closing the window stops the relay entirely.' -X 42 -Y 88 -W 360 -H 20 -Font $Theme.FontSmall -Color $Theme.Dim)
 
-[void](New-FrivoLabel -Theme $Theme -Parent $settingsView -Text 'STARTUP' -X 30 -Y 192 -W 380 -H 14 -Font $Theme.FontCaps -Color $Theme.Faint)
-$startCard = New-FrivoCard -Theme $Theme -Parent $settingsView -X 24 -Y 212 -W 422 -H 78
+[void](New-FrivoLabel -Theme $Theme -Parent $settingsView -Text 'STARTUP' -X 30 -Y 200 -W 380 -H 14 -Font $Theme.FontCaps -Color $Theme.Faint)
+$startCard = New-FrivoCard -Theme $Theme -Parent $settingsView -X 24 -Y 220 -W 422 -H 78
 $startupCheck = New-FrivoCheck -Theme $Theme -Parent $startCard -Text 'Start FrivOSC when I sign in to Windows' -X 18 -Y 14 -W 390
 $startupNote = New-FrivoLabel -Theme $Theme -Parent $startCard -Text 'Runs in the background from sign-in, with no window.' -X 42 -Y 38 -W 360 -H 36 -Font $Theme.FontSmall -Color $Theme.Dim
 
-[void](New-FrivoLabel -Theme $Theme -Parent $settingsView -Text 'TROUBLESHOOTING' -X 30 -Y 304 -W 380 -H 14 -Font $Theme.FontCaps -Color $Theme.Faint)
-$toolsCard = New-FrivoCard -Theme $Theme -Parent $settingsView -X 24 -Y 324 -W 422 -H 76
+[void](New-FrivoLabel -Theme $Theme -Parent $settingsView -Text 'TROUBLESHOOTING' -X 30 -Y 312 -W 380 -H 14 -Font $Theme.FontCaps -Color $Theme.Faint)
+$toolsCard = New-FrivoCard -Theme $Theme -Parent $settingsView -X 24 -Y 332 -W 422 -H 76
 [void](New-FrivoLabel -Theme $Theme -Parent $toolsCard -Text 'Config and log files live in ProgramData.' -X 18 -Y 16 -W 250 -H 44 -Font $Theme.FontSmall -Color $Theme.Dim)
 $logButton = New-FrivoButton -Theme $Theme -Parent $toolsCard -Text 'Open log folder' -X 268 -Y 20 -W 136 -H 36
 $logButton.Font = $Theme.FontUI
 
-$settingsHint = New-FrivoLabel -Theme $Theme -Parent $settingsView -Text '' -X 28 -Y 414 -W 414 -H 40 -Font $Theme.FontSmall -Color $Theme.Faint
+$settingsHint = New-FrivoLabel -Theme $Theme -Parent $settingsView -Text '' -X 28 -Y 422 -W 414 -H 40 -Font $Theme.FontSmall -Color $Theme.Faint
 $settingsHint.TextAlign = 'TopCenter'
 
+# ==================================================================
+# Notification area
+# ==================================================================
+# Closing this window with "keep running" chosen hides it here rather than
+# ending it. Before this, the window simply vanished and the only evidence
+# FrivOSC was still relaying was Task Manager.
+
+$notify = New-Object System.Windows.Forms.NotifyIcon
+$notify.Text = 'FrivOSC'
+$trayIconPath = Join-Path $Root 'FrivOSCIcon.ico'
+if (Test-Path -LiteralPath $trayIconPath) {
+    try { $notify.Icon = New-Object System.Drawing.Icon($trayIconPath) } catch { }
+}
+$trayMenu = New-Object System.Windows.Forms.ContextMenuStrip
+$miShow = $trayMenu.Items.Add('Show FrivOSC')
+[void]$trayMenu.Items.Add('-')
+$miQuit = $trayMenu.Items.Add('Stop FrivOSC and quit')
+$notify.ContextMenuStrip = $trayMenu
+$notify.Visible = $true
+
+$script:Quitting = $false
+$script:BalloonShown = $false
 $script:ActivityOpen = $false
 $script:SettingsLoading = $false
+
+function Show-FrivOSCWindow {
+    # Nothing repaints while hidden, so what is on screen is as old as the
+    # moment it was closed. Refresh before showing it, not after.
+    try { Update-FrivOSCStatus } catch { }
+    $form.ShowInTaskbar = $true
+    $form.Show()
+    if ($form.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized) {
+        $form.WindowState = [System.Windows.Forms.FormWindowState]::Normal
+    }
+    $form.BringToFront()
+    $form.Activate()
+    # Windows can refuse a background process the foreground once. Raising
+    # TopMost just for this activation gets the window in front without
+    # leaving FrivOSC permanently above everything else.
+    $form.TopMost = $true
+    $form.TopMost = $false
+}
+
+function Test-FrivOSCStopOnClose {
+    try {
+        $current = Read-FrivOSCConfig
+        return ($current.Contains('stop_on_close') -and [bool]$current['stop_on_close'])
+    } catch { return $false }
+}
 
 function Set-FrivOSCActivityOpen([bool] $Open) {
     <#
@@ -741,22 +816,88 @@ $logButton.Add_Click({
 
 $closeButton.Add_Click({ $form.Close() })
 
+$notify.Add_DoubleClick({ Show-FrivOSCWindow })
+$miShow.Add_Click({ Show-FrivOSCWindow })
+$miQuit.Add_Click({
+    # The one path that really ends everything: the service stops and the
+    # tray icon goes with it.
+    $script:Quitting = $true
+    Stop-FrivOSCService
+    $form.Close()
+    # The message loop is running without a visible form whenever this is
+    # reached from the tray, so closing the form alone would leave it
+    # spinning with nothing on screen.
+    [System.Windows.Forms.Application]::Exit()
+})
+
 # Refreshed on a timer rather than only on open: the point of this window
 # is watching a state change while you fix something in VRChat or Frivo.
 $refresh = New-Object System.Windows.Forms.Timer
 $refresh.Interval = 1500
-$refresh.Add_Tick({ Update-FrivOSCStatus })
+$refresh.Add_Tick({
+    # Skipped while hidden. There is nothing to repaint, and the file reads
+    # and process scan behind it are not worth doing to an invisible window.
+    if ($form.Visible) { Update-FrivOSCStatus }
+    # A second launcher was started — bring this one forward instead.
+    if ($showSignal.WaitOne(0)) {
+        [void]$showSignal.Reset()
+        Show-FrivOSCWindow
+    }
+})
 $form.Add_Shown({ Set-FrivOSCActivityOpen $false; Update-FrivOSCStatus; $refresh.Start() })
+
 $form.Add_FormClosing({
-    $refresh.Stop()
-    # Closing a status window is not, by itself, a request to stop relaying
-    # — but it is if you asked for it to be.
-    try {
-        $current = Read-FrivOSCConfig
-        if ($current.Contains('stop_on_close') -and [bool]$current['stop_on_close']) {
-            Stop-FrivOSCService
-        }
-    } catch { }
+    param($sender, $eventArgs)
+    if ($script:Quitting) { return }
+    if ($eventArgs.CloseReason -ne [System.Windows.Forms.CloseReason]::UserClosing) { return }
+
+    if (Test-FrivOSCStopOnClose) {
+        $script:Quitting = $true
+        Stop-FrivOSCService
+        return
+    }
+
+    # Hidden, not closed. The service keeps relaying and the tray icon is
+    # the evidence of it.
+    $eventArgs.Cancel = $true
+    $form.Hide()
+    $form.ShowInTaskbar = $false
+    if (-not $script:BalloonShown) {
+        $script:BalloonShown = $true
+        try {
+            $notify.ShowBalloonTip(2500, 'FrivOSC',
+                'Still running. Right-click here to stop it.',
+                [System.Windows.Forms.ToolTipIcon]::Info)
+        } catch { }
+    }
 })
 
-[void] $form.ShowDialog()
+$form.Add_FormClosed({
+    $refresh.Stop()
+    $notify.Visible = $false
+    $notify.Dispose()
+    [System.Windows.Forms.Application]::Exit()
+})
+
+# Run() rather than ShowDialog(): the loop has to outlive the window when
+# it is hidden to the tray, and has to keep running with no window at all.
+[System.Windows.Forms.Application]::Run($form)
+try { $instanceLock.ReleaseMutex() } catch { }
+
+} catch {
+    $reason = $_.Exception.Message
+    $where = $_.ScriptStackTrace
+    try {
+        Add-Content -LiteralPath $LauncherLog -Value (
+            "{0}`r`n{1}`r`n{2}`r`n----" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $reason, $where)
+    } catch { }
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        [void][System.Windows.Forms.MessageBox]::Show(
+            ("FrivOSC's window could not open.`r`n`r`n{0}`r`n`r`nDetails were written to:`r`n{1}" -f $reason, $LauncherLog),
+            'FrivOSC',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error)
+    } catch { }
+    exit 1
+}

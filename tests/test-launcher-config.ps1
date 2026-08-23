@@ -26,6 +26,15 @@ if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) {
     throw ("FrivOSC-Launcher.ps1 was not found at {0}." -f $launcher)
 }
 
+function Get-LauncherFunction([string] $Source, [string] $Name, [string] $Until) {
+    $start = $Source.IndexOf(('function {0} {{' -f $Name))
+    $end = $Source.IndexOf(('function {0} {{' -f $Until), $start)
+    if ($start -lt 0 -or $end -le $start) {
+        throw ('{0} could not be located in the launcher.' -f $Name)
+    }
+    return $Source.Substring($start, $end - $start)
+}
+
 $source = Get-Content -LiteralPath $launcher -Raw
 $start = $source.IndexOf('function Read-FrivOSCConfig {')
 $end = $source.IndexOf('function Test-FrivOSCStartsWithWindows {')
@@ -38,6 +47,9 @@ New-Item -ItemType Directory -Path $sandbox -Force | Out-Null
 $DataDir = $sandbox
 $ConfigPath = Join-Path $sandbox 'config.json'
 . ([scriptblock]::Create($source.Substring($start, $end - $start)))
+# The one that decides, on close, between hiding to the notification area
+# and stopping the relay.
+. ([scriptblock]::Create((Get-LauncherFunction $source 'Test-FrivOSCStopOnClose' 'Sync-FrivOSCSettingsView')))
 
 $fails = @()
 function Check([string] $Name, [bool] $Condition, $Got) {
@@ -87,6 +99,30 @@ try {
         ($config['stop_on_close'] -eq $false) $config['stop_on_close']
 
     Write-Host ''
+    Write-Host '--- what closing the window does ---'
+    # False means hide to the notification area and keep relaying. This is
+    # the default, and it has to survive a missing key, a missing file and
+    # a corrupt one — every one of those must not read as "stop".
+    Remove-Item -LiteralPath $ConfigPath -Force -ErrorAction SilentlyContinue
+    Check 'no config file: the window hides rather than stopping the relay' `
+        (-not (Test-FrivOSCStopOnClose)) 'it would stop'
+
+    [void](Save-FrivOSCUrl 'https://frivo.local:5000')
+    Check 'a config with no such key: still hides' `
+        (-not (Test-FrivOSCStopOnClose)) 'it would stop'
+
+    [void](Save-FrivOSCConfigValue 'stop_on_close' $true)
+    Check 'asked to stop: it stops' (Test-FrivOSCStopOnClose) 'it would hide'
+
+    [void](Save-FrivOSCConfigValue 'stop_on_close' $false)
+    Check 'asked to keep running: back to hiding' `
+        (-not (Test-FrivOSCStopOnClose)) 'it would stop'
+
+    Set-Content -LiteralPath $ConfigPath -Value '{ broken'
+    Check 'a corrupt config does not silently start stopping the relay' `
+        (-not (Test-FrivOSCStopOnClose)) 'it would stop'
+
+    Write-Host ''
     Write-Host '--- a corrupt file ---'
     Set-Content -LiteralPath $ConfigPath -Value '{ not json at all'
     $threw = $false
@@ -103,4 +139,4 @@ if ($fails.Count) {
     Write-Host ("{0} failed: {1}" -f $fails.Count, ($fails -join ', '))
     exit 1
 }
-Write-Host '13 passed, 0 failed'
+Write-Host '18 passed, 0 failed'
