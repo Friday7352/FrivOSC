@@ -145,6 +145,25 @@ Windows. This redraws the same coordinates with Pillow and writes
 It is a hand port and can drift. Change the geometry in the launcher and
 you have to change it here too, or it stops telling you the truth.
 
+## test-version.py
+
+    python3 tests/test-version.py
+
+One version number, read by everything. FrivOSC had four literals and they
+already disagreed **before a single release had shipped**: the service said
+1.1.0, the Inno container said 1.0.0, the compiled host said 1.0.0.0, and
+the Apps & features entry was hardcoded to "1.0". Nothing catches that.
+
+`VERSION` at the repo root is now the only copy. This checks all four
+consumers resolve to the same string, that a missing file degrades to
+"unknown" rather than failing an install, and that a malformed one is
+rejected at build time rather than later by csc, whose error mentions
+nothing useful.
+
+It also scans for a literal creeping back. That scan skips lines mentioning
+Python and anything shaped like an IPv4 address — `3.11.9` and `127.0.0.1`
+both look exactly like a version number and both belong in an installer.
+
 ## Not covered
 
 The WinForms wizard and launcher are not exercised. They need a stubbed

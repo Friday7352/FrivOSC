@@ -1,12 +1,22 @@
 #define AppName "FrivOSC"
-#define AppVersion "1.0.0"
 #define AppPublisher "Friday"
+
+; The version comes from one file at the repo root, so a release is a
+; one-line edit rather than four literals that can disagree — which they
+; already had, before anything shipped.
+#define VersionFile AddBackslash(SourcePath) + "..\VERSION"
+#define VersionHandle FileOpen(VersionFile)
+#define AppVersion Trim(FileRead(VersionHandle))
+#expr FileClose(VersionHandle)
+#if AppVersion == ""
+  #error VERSION at the repo root is empty. Put a version number in it.
+#endif
 
 [Setup]
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
-VersionInfoVersion=1.0.0.0
+VersionInfoVersion={#AppVersion}
 VersionInfoCompany={#AppPublisher}
 VersionInfoDescription=FrivOSC Setup
 OutputDir=..\dist
@@ -42,6 +52,8 @@ Source: "..\FrivOSCHost.exe";       DestDir: "{tmp}\FrivOSCSetupPayload"; Flags:
 Source: "..\FrivOSCIcon.ico";       DestDir: "{tmp}\FrivOSCSetupPayload"; Flags: ignoreversion deleteafterinstall
 Source: "..\FrivOSCSetupHost.exe";  DestDir: "{tmp}\FrivOSCSetupPayload"; Flags: ignoreversion deleteafterinstall
 Source: "..\Install-FrivOSC.ps1";   DestDir: "{tmp}\FrivOSCSetupPayload"; Flags: ignoreversion deleteafterinstall
+; Install-FrivOSC.ps1 and the service both read this.
+Source: "..\VERSION";              DestDir: "{tmp}\FrivOSCSetupPayload"; Flags: ignoreversion deleteafterinstall
 Source: "..\LICENSE";               DestDir: "{tmp}\FrivOSCSetupPayload"; Flags: ignoreversion deleteafterinstall
 Source: "..\README.md";             DestDir: "{tmp}\FrivOSCSetupPayload"; Flags: ignoreversion deleteafterinstall
 Source: "..\Uninstall-FrivOSC.vbs"; DestDir: "{tmp}\FrivOSCSetupPayload"; Flags: ignoreversion deleteafterinstall

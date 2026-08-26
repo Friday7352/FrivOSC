@@ -38,7 +38,29 @@ import urllib.error
 import urllib.request
 
 APP_NAME = "FrivOSC"
-VERSION = "1.1.0"
+def _read_version():
+    """The version, from the VERSION file this ships beside.
+
+    One file decides it for the whole app — the Apps & features entry, the
+    setup wizard, the installer container, the compiled host and this
+    service. The literal below is a fallback, not a second source of truth:
+    a copy running without the file should still work, it just cannot say
+    which build it is.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    for candidate in (os.path.join(here, "VERSION"),
+                      os.path.join(os.path.dirname(here), "VERSION")):
+        try:
+            with open(candidate, "r", encoding="utf-8") as handle:
+                text = handle.read().strip()
+            if text:
+                return text
+        except OSError:
+            continue
+    return "unknown"
+
+
+VERSION = _read_version()
 
 try:
     sys.stdout.reconfigure(line_buffering=True)

@@ -47,6 +47,37 @@ $LogPath = Join-Path ([IO.Path]::GetTempPath()) 'FrivOSC-Setup.log'
 $script:InstallMarkerName = '.frivosc-install.json'
 $script:InstallMarkerId = 'com.frivo.frivosc'
 $script:TaskName = 'FrivOSC'
+
+function Get-FrivOSCVersion {
+    <#
+        One file decides the version for the whole app: this Apps & features
+        entry, the setup wizard, the installer container, the compiled host
+        and the service. It sits at the repo root as VERSION and ships in
+        the setup payload beside this script.
+
+        The fallback is 'unknown' rather than a number. A wrong version is
+        worse than an obviously absent one — it is the sort of thing nobody
+        checks until they are trying to work out which build broke.
+    #>
+    $names = @()
+    $scriptDir = Split-Path -Parent $PSCommandPath
+    if ($scriptDir) {
+        $names += (Join-Path $scriptDir 'VERSION')
+        $parent = Split-Path -Parent $scriptDir
+        if ($parent) { $names += (Join-Path $parent 'VERSION') }
+    }
+    foreach ($candidate in $names) {
+        try {
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                $text = (Get-Content -LiteralPath $candidate -Raw -ErrorAction Stop).Trim()
+                if ($text) { return $text }
+            }
+        } catch { }
+    }
+    return 'unknown'
+}
+
+$script:AppVersion = Get-FrivOSCVersion
 $script:RequiredPythonRuntime = '3.11.9'
 # Where the service reads its settings. Setup writes it here while
 # elevated; the service reads it while not, and Program Files is not
@@ -190,7 +221,9 @@ function Install-Python {
 function Copy-ProgramFiles([string] $Destination) {
     New-Item -ItemType Directory -Path $Destination -Force | Out-Null
     $keep = @(
-        '.gitattributes', '.gitignore', 'LICENSE', 'README.md', 'requirements.txt',
+        # VERSION installs alongside the service, which reads it to report
+        # which build is running in its log and to Frivo.
+        '.gitattributes', '.gitignore', 'LICENSE', 'README.md', 'requirements.txt', 'VERSION',
         'frivosc_service.py', 'Install-FrivOSC.ps1', 'Uninstall-FrivOSC.vbs',
         'FrivOSC-Uninstall.ps1', 'FrivOSC-Launcher.ps1', 'FrivOSCHost.exe', 'FrivOSCSetupHost.exe',
         'FrivOSC.Ui.psm1', 'FrivOSC-Setup.ps1', 'FrivOSC-Setup.vbs', 'FrivOSC.png', 'FrivOSCIcon.ico'
@@ -266,7 +299,7 @@ function Register-FrivOSCInstalledApp([string] $Target) {
     $uninstaller = Join-Path $Target 'Uninstall-FrivOSC.vbs'
     New-Item -Path $key -Force | Out-Null
     New-ItemProperty -Path $key -Name 'DisplayName' -Value 'FrivOSC' -PropertyType String -Force | Out-Null
-    New-ItemProperty -Path $key -Name 'DisplayVersion' -Value '1.0' -PropertyType String -Force | Out-Null
+    New-ItemProperty -Path $key -Name 'DisplayVersion' -Value $script:AppVersion -PropertyType String -Force | Out-Null
     New-ItemProperty -Path $key -Name 'Publisher' -Value 'Friday' -PropertyType String -Force | Out-Null
     New-ItemProperty -Path $key -Name 'InstallLocation' -Value $Target -PropertyType String -Force | Out-Null
     New-ItemProperty -Path $key -Name 'UninstallString' -Value ('wscript.exe "{0}"' -f $uninstaller) -PropertyType String -Force | Out-Null

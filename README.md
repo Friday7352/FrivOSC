@@ -83,6 +83,15 @@ would otherwise fail partway through on a locked file. The window is asked
 to close before it is killed, so its tray icon goes with it. Settings in
 `config.json` are kept.
 
+## Version number
+
+The version lives in one file, `VERSION`, at the root of this repository.
+Edit that line before a release and everything picks it up on the next
+build: the Apps & features entry, the setup wizard, `FrivOSCSetup.exe`,
+`FrivOSCHost.exe`'s file properties, and what the service reports to Frivo
+and writes in its log. Nothing else stores a copy, and
+`tests/test-version.py` checks they still agree.
+
 ## Settings
 
 Settings live in `C:\ProgramData\FrivOSC\config.json`, alongside the log

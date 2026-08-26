@@ -12,8 +12,10 @@ using System.Windows.Forms;
 [assembly: AssemblyDescription("FrivOSC desktop host")]
 [assembly: AssemblyCompany("Friday")]
 [assembly: AssemblyProduct("FrivOSC")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+// Generated from the VERSION file at the repo root by
+// Build-FrivOSCInstaller.ps1 and compiled in alongside this file. Written
+// here originally, which is how this exe said 1.0.0 while the service said
+// 1.1.0 — before anything had even shipped.
 
 internal static class Program
 {
