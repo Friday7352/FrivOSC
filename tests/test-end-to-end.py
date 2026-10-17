@@ -40,6 +40,7 @@ received_state = []
 acks = []
 outbox = []
 hello_seen = []
+typing_flag = {"on": False, "down": False}   # NEW (typing): what the stand-in Frivo says
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -63,8 +64,10 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "no"}, 404)
     def do_GET(self):
         if self.path == "/api/frivosc/outbox":
+            if typing_flag["down"]:
+                self._json({"error": "restarting"}, 503); return
             msgs = list(outbox); outbox.clear()
-            self._json({"messages": msgs})
+            self._json({"messages": msgs, "typing": typing_flag["on"]})
         else:
             self._json({"error": "no"}, 404)
 
@@ -221,6 +224,51 @@ time.sleep(1.5)
 check("a repeat inside the cooldown does not press again",
       not voice_packets(drain(vrchat)))
 
+print("\n--- typing dots (NEW) ---")
+# Frivo says on every outbox reply whether you are responding; FrivOSC turns
+# that into VRChat's /chatbox/typing. Sent on change, refreshed while on, and
+# never left up when Frivo stops answering.
+def typing_packets(packets):
+    return [p for p in packets if b"/chatbox/typing" in p]
+
+drain(vrchat)
+time.sleep(0.6)
+check("no typing packets while Frivo says nobody is typing", not typing_packets(drain(vrchat)))
+
+typing_flag["on"] = True
+time.sleep(0.7)
+got = typing_packets(drain(vrchat))
+check("dots on when Frivo says you are responding", bool(got) and got[0].endswith(b",T\x00\x00"), repr(got))
+
+time.sleep(2.6)
+got = typing_packets(drain(vrchat))
+check("and refreshed while it stays on", any(p.endswith(b",T\x00\x00") for p in got), repr(got))
+
+outbox.append({"id": "t1", "text": "Reply while still talking.", "speaking": True})
+time.sleep(0.8)
+packets = drain(vrchat)
+after_text = typing_packets(packets[[i for i, p in enumerate(packets) if b"/chatbox/input" in p][0]:]) if any(b"/chatbox/input" in p for p in packets) else []
+check("a message sent while you keep talking leaves the dots on", bool(after_text) and after_text[0].endswith(b",T\x00\x00"), repr(after_text))
+
+typing_flag["on"] = False
+time.sleep(0.7)
+got = typing_packets(drain(vrchat))
+check("dots off when you stop", bool(got) and got[-1].endswith(b",F\x00\x00"), repr(got))
+time.sleep(2.6)
+check("and not re-sent while off", not typing_packets(drain(vrchat)))
+
+typing_flag["on"] = True
+time.sleep(0.7)
+drain(vrchat)
+typing_flag["down"] = True
+time.sleep(0.8)
+got = typing_packets(drain(vrchat))
+check("Frivo going away clears the dots", bool(got) and got[-1].endswith(b",F\x00\x00"), repr(got))
+typing_flag["down"] = False
+typing_flag["on"] = False
+time.sleep(0.8)
+drain(vrchat)
+
 print("\n--- status file ---")
 # Read before stopping: a clean shutdown deletes it, which is itself the
 # behaviour that stops the launcher reporting a connection from a dead
@@ -243,6 +291,7 @@ if os.path.exists(status_path):
           abs(published.get("chatbox_last", 0) - time.time()) < 60, str(published))
     check("it counts the unmutes it sent",
           published.get("unmute_total", 0) >= 1, str(published))
+    check("it says whether the typing dots are up", published.get("typing") is False, str(published))
 
 proc.terminate()
 try: out, _ = proc.communicate(timeout=5)

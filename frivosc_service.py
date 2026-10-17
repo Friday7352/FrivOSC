@@ -127,6 +127,10 @@ DEFAULT_CONFIG = {
     # Ignore repeat unmute requests this soon after one. Sending three
     # messages quickly should not press the button three times.
     "unmute_cooldown_seconds": 3.0,
+    # NEW (typing): while Frivo says you are responding, the typing dots
+    # are re-sent this often, so they come back by themselves after
+    # anything clears them — a chatbox message, VRChat restarting.
+    "typing_refresh_seconds": 2.0,
 }
 
 
@@ -475,6 +479,11 @@ class ChatboxSender:
         self._stop = threading.Event()
         self._thread = None
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # NEW (typing): whether you are responding right now, as Frivo last
+        # said. The last page of a message leaves the dots in this state
+        # rather than always clearing them — otherwise talking while a long
+        # reply pages out would lose the dots until the next refresh.
+        self.typing = False
 
     def start(self):
         self._stop.clear()
@@ -501,6 +510,14 @@ class ChatboxSender:
     def _emit(self, message):
         self._sock.sendto(message, ("127.0.0.1", self.port))
 
+    def set_typing(self, on):
+        """NEW (typing): VRChat's typing dots above your head, on or off."""
+        self.typing = bool(on)
+        try:
+            self._emit(osc_message("/chatbox/typing", self.typing))
+        except OSError as exc:
+            log(f"Could not send the typing indicator: {exc}")
+
     def _run(self):
         last_send = 0.0
         while not self._stop.is_set():
@@ -519,7 +536,9 @@ class ChatboxSender:
                             return
                     more = index < len(pages) - 1
                     self._emit(osc_message("/chatbox/input", page, True, sfx))
-                    self._emit(osc_message("/chatbox/typing", more))
+                    # CHANGED (typing): after the last page, the dots show
+                    # whether you are already responding again.
+                    self._emit(osc_message("/chatbox/typing", more or self.typing))
                     last_send = time.monotonic()
             except Exception as exc:
                 log(f"Chatbox send failed: {exc}")
@@ -683,6 +702,9 @@ class Bridge:
         self._unmute_cooldown_at = 0.0
         self.unmute_verify_seconds = float(config.get("unmute_verify_seconds", 2.0))
         self.unmute_cooldown_seconds = float(config.get("unmute_cooldown_seconds", 3.0))
+        # NEW (typing)
+        self.typing_refresh_seconds = float(config.get("typing_refresh_seconds", 2.0))
+        self._typing_sent_at = 0.0
 
     def stop(self):
         self._stop.set()
@@ -718,6 +740,7 @@ class Bridge:
             chatbox_last=self._chatbox_last,
             unmute_total=self._unmute_total,
             unmute_last=self._unmute_last,
+            typing=bool(self.sender.typing),   # NEW (typing)
         )
 
     def _push_state(self):
@@ -786,13 +809,33 @@ class Bridge:
         log("open from here without taking away your own mute key.")
         self._publish_status()
 
+    def _apply_typing(self, wanted):
+        """
+        NEW (typing): Frivo says whether you are responding — talking with
+        dictation on, or with unsent text in its message box — on every
+        outbox reply. Sent to VRChat when it changes, and refreshed while it
+        stays on. An older Frivo never says, which reads as "not typing".
+        """
+        now = time.monotonic()
+        if wanted == self.sender.typing:
+            if not wanted or now - self._typing_sent_at < self.typing_refresh_seconds:
+                return
+        self.sender.set_typing(wanted)
+        self._typing_sent_at = now
+
     def _pump_outbox(self):
         try:
             response = self.client.fetch_outbox()
             self._note_connection(True)
         except Exception as exc:
             self._note_connection(False, str(exc))
+            # NEW (typing): Frivo gone means nobody is telling us you are
+            # still responding. Dots left on would stay up indefinitely.
+            if self.sender.typing:
+                self._apply_typing(False)
             return
+
+        self._apply_typing(bool((response or {}).get("typing")))   # NEW (typing)
 
         for message in (response or {}).get("messages") or []:
             message = message or {}
@@ -870,6 +913,9 @@ class Bridge:
             pass
         finally:
             log("Stopping.")
+            # NEW (typing): never leave the dots up behind us.
+            if self.sender.typing:
+                self.sender.set_typing(False)
             self.sender.stop()
             self.watcher.stop()
             clear_status()
