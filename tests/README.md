@@ -180,7 +180,7 @@ The service itself is covered by `test-end-to-end.py` above.
 
 ## Typing dots (in test-end-to-end.py)
 
-New in 1.1.0. Frivo adds a `typing` flag to its outbox reply, and FrivOSC
+New in 1.2.0. Frivo adds a `typing` flag to its outbox reply, and FrivOSC
 turns it into VRChat's `/chatbox/typing`. The stand-in Frivo flips the flag
 and the stand-in VRChat checks the packets that come through:
 - The dots are sent when the flag turns on, refreshed every 2 seconds while
