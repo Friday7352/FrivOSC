@@ -214,6 +214,73 @@ Assert-True 'a null process does not throw' (-not (Test-IsFrivOSCLauncherProcess
 Assert-True 'and neither does an empty install root' (-not (Test-IsFrivOSCLauncherProcess `
     (New-FakeProcess 109 'FrivOSCHost.exe' 'C:\Program Files\FrivOSC\FrivOSCHost.exe' '') '' 999))
 
+# --- NEW (update failure): closing the window before an update -----------
+# Setup failed on every update made while no FrivOSC window was open — the
+# usual case, since it runs hidden — with "The property 'ProcessId' cannot be
+# found on this object". Get-RunningLaunchers returns ,$found and the caller
+# wrapped it in @() again, so "no windows" counted as one. Run for real,
+# under StrictMode, with Windows' process list and Stop-Process replaced.
+Write-Host ''
+Write-Host '--- closing the FrivOSC window before an update ---'
+$stopFn = $ast.Find({
+    param($n)
+    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Stop-FrivOSCLauncher'
+}, $true)
+Invoke-Expression $stopFn.Extent.Text
+function Write-SetupLog { param($Message) }
+function Start-Sleep { param([int] $Milliseconds, [int] $Seconds) }
+$script:killed = @()
+function Stop-Process { param([int] $Id, [switch] $Force, $ErrorAction) $script:killed += $Id }
+$script:processes = @()
+function Get-CimInstance { $script:processes }
+
+$explorer = New-FakeProcess 201 'explorer.exe' 'C:\Windows\explorer.exe' ''
+# Built from GetFullPath, which is what Stop-FrivOSCLauncher compares
+# against — so this also holds when the test runs somewhere other than Windows.
+$fakeRoot = [IO.Path]::GetFullPath('C:\Program Files\FrivOSC').TrimEnd('\', '/')
+$window   = New-FakeProcess 202 'FrivOSCHost.exe' ($fakeRoot + '\FrivOSCHost.exe') ''
+
+$script:processes = @($explorer)
+$threw = ''
+try { Stop-FrivOSCLauncher 'C:\Program Files\FrivOSC' } catch { $threw = $_.Exception.Message }
+Assert-True 'no FrivOSC window open: setup carries on' ($threw -eq '') $threw
+Assert-True 'and closes nothing' ($script:killed.Count -eq 0) ($script:killed -join ',')
+
+$script:processes = @()
+$threw = ''
+try { Stop-FrivOSCLauncher 'C:\Program Files\FrivOSC' } catch { $threw = $_.Exception.Message }
+Assert-True 'an empty process list: setup carries on' ($threw -eq '') $threw
+
+# A window that will not close when asked (an older launcher with no quit
+# signal) is ended by its process id — and only that one.
+$script:processes = @($explorer, $window)
+$script:killed = @()
+$threw = ''
+try { Stop-FrivOSCLauncher 'C:\Program Files\FrivOSC' } catch { $threw = $_.Exception.Message }
+Assert-True 'a window that stays open does not throw' ($threw -eq '') $threw
+Assert-True 'and is closed by its own process id, nothing else' (($script:killed -join ',') -eq '202') ($script:killed -join ',')
+
+# The shape of the bug, wherever else it could live: a function that returns
+# ,$x must not have its result wrapped in @() by a caller.
+$protected = @($ast.FindAll({
+    param($n)
+    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+    $n.Body.Extent.Text -match 'return\s*,\s*\$'
+}, $true) | ForEach-Object { $_.Name })
+# From the parsed script, not its text, so a comment explaining the bug
+# does not count as the bug.
+$doubled = @($ast.FindAll({
+    param($n)
+    $n -is [System.Management.Automation.Language.ArrayExpressionAst]
+}, $true) | ForEach-Object {
+    $inner = $_.SubExpression.Statements
+    foreach ($statement in $inner) {
+        $command = $statement.Find({ param($c) $c -is [System.Management.Automation.Language.CommandAst] }, $true)
+        if ($command -and $command.GetCommandName() -in $protected) { $command.GetCommandName() }
+    }
+})
+Assert-True 'no caller wraps a ,$array-returning function in @() again' ($doubled.Count -eq 0) ($doubled -join ', ')
+
 Write-Host ("`n{0} passed, {1} failed" -f $script:pass, $script:fail)
 if ($script:fail -gt 0) { exit 1 }
 exit 0

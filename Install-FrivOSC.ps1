@@ -389,7 +389,13 @@ function Stop-FrivOSCLauncher([string] $Target) {
         return ,$found
     }
 
-    $launchers = @(Get-RunningLaunchers)
+    # FIXED (update failure): not @(Get-RunningLaunchers). The function
+    # already returns ,$found; wrapping that in @() again turned "no windows"
+    # into "one entry that is an empty list" — Count 1, not 0 — and setup
+    # then read .ProcessId off the empty list and died under StrictMode:
+    # "The property 'ProcessId' cannot be found on this object". It failed
+    # exactly when no FrivOSC window was open, which is the usual case.
+    $launchers = Get-RunningLaunchers
     if ($launchers.Count -eq 0) { return }
 
     Write-SetupLog ('Asking {0} FrivOSC window(s) to close' -f $launchers.Count)
@@ -407,7 +413,7 @@ function Stop-FrivOSCLauncher([string] $Target) {
         $quitSignal.Dispose()
     } catch { }
 
-    $stubborn = @(Get-RunningLaunchers)
+    $stubborn = Get-RunningLaunchers   # FIXED (update failure): see above
     foreach ($process in $stubborn) {
         Write-SetupLog ('Closing FrivOSC window {0} the hard way' -f $process.ProcessId)
         try { Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue } catch { }
